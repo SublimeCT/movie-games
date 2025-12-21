@@ -1,0 +1,27 @@
+{
+  "name": "movie-games",
+  "version": "1.0.0",
+  "description": "AI 互动电影游戏生成器",
+  "scripts": {
+    "dev:frontend": "cd front && pnpm dev",
+    "dev:backend": "cd server && cargo run",
+    "build:frontend": "cd front && pnpm build",
+    "build:backend": "cd server && cargo build --release",
+    "build:deploy": "pnpm build:frontend && pnpm build:backend && rsync -avz ./front/dist/ root@47.96.124.139:/srv/movie-games-dist/dist/ && rsync -avz ./server/target/release/server root@47.96.124.139:/srv/movie-games-server/server",
+    "dev": "concurrently \"pnpm dev:backend\" \"pnpm dev:frontend\"",
+    "install:frontend": "cd front && pnpm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "keywords": [
+    "vue",
+    "rust",
+    "game",
+    "interactive",
+    "movie"
+  ],
+  "author": "xiaban.run",
+  "license": "MIT",
+  "packageManager": "pnpm@10.4.1"
+}

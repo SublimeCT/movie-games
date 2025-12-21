@@ -191,7 +191,7 @@ pub(crate) async fn generate(
             finish_glm_request_log(
                 &state.db,
                 request_id,
-                "error",
+                "failed",
                 None,
                 Some("Invalid baseUrl"),
                 Some(response_time_ms),
@@ -211,7 +211,7 @@ pub(crate) async fn generate(
             finish_glm_request_log(
                 &state.db,
                 request_id,
-                "error",
+                "failed",
                 None,
                 Some("Missing GLM API Key"),
                 Some(response_time_ms),
@@ -237,7 +237,7 @@ pub(crate) async fn generate(
             finish_glm_request_log(
                 &state.db,
                 request_id,
-                "error",
+                "failed",
                 None,
                 Some("GLM Request failed"),
                 None,
@@ -290,12 +290,25 @@ pub(crate) async fn generate(
         ));
     }
 
-    let response_json: serde_json::Value = response.json().await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "Failed to parse GLM response" })),
-        )
-    })?;
+    let response_json: serde_json::Value = match response.json().await {
+        Ok(v) => v,
+        Err(_) => {
+            let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "failed",
+                None,
+                Some("Failed to parse GLM response"),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "Failed to parse GLM response" })),
+            ));
+        }
+    };
 
     if let Some(usage) = response_json.get("usage") {
         if let Some(tokens) = usage.get("total_tokens") {
@@ -303,12 +316,25 @@ pub(crate) async fn generate(
         }
     }
 
-    let content = response_json["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "Invalid GLM response" })),
-        ))?;
+    let content = match response_json["choices"][0]["message"]["content"].as_str() {
+        Some(c) => c,
+        None => {
+            let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "failed",
+                None,
+                Some("Invalid GLM response structure"),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "Invalid GLM response" })),
+            ));
+        }
+    };
 
     println!("GLM Response Content Length: {}", content.len());
 
@@ -673,11 +699,23 @@ pub(crate) async fn expand_character(
                     .await;
                     Json(ExpandCharacterResponse { characters: chars }).into_response()
                 }
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Parse Error: {}", e),
-                )
-                    .into_response(),
+                Err(e) => {
+                    let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+                    finish_glm_request_log(
+                        &state.db,
+                        request_id,
+                        "failed",
+                        None,
+                        Some(&format!("Parse Error: {}", e)),
+                        Some(response_time_ms),
+                    )
+                    .await;
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Parse Error: {}", e),
+                    )
+                    .into_response()
+                }
             }
         }
         Err(e) => {
@@ -686,7 +724,7 @@ pub(crate) async fn expand_character(
                 finish_glm_request_log(
                     &state.db,
                     request_id,
-                    "error",
+                    "failed",
                     None,
                     Some(&e),
                     Some(response_time_ms),
@@ -707,7 +745,7 @@ pub(crate) async fn expand_character(
             finish_glm_request_log(
                 &state.db,
                 request_id,
-                "error",
+                "failed",
                 None,
                 Some(&e),
                 Some(response_time_ms),

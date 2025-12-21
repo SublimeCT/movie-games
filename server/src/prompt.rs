@@ -3,19 +3,51 @@ use crate::api_types::GenerateRequest;
 
 pub(crate) fn clean_json(s: &str) -> String {
     let s = s.trim();
-    if s.starts_with("```json") {
+    let raw = if s.starts_with("```json") {
         s.trim_start_matches("```json")
             .trim_end_matches("```")
             .trim()
-            .to_string()
     } else if s.starts_with("```") {
         s.trim_start_matches("```")
             .trim_end_matches("```")
             .trim()
-            .to_string()
     } else {
-        s.to_string()
+        s
+    };
+
+    let mut output = String::with_capacity(raw.len());
+    let mut in_string = false;
+    let mut chars = raw.chars();
+
+    while let Some(c) = chars.next() {
+        if in_string {
+            match c {
+                '\\' => {
+                    output.push('\\');
+                    if let Some(next_c) = chars.next() {
+                        output.push(next_c);
+                    }
+                }
+                '"' => {
+                    output.push('"');
+                    in_string = false;
+                }
+                '\n' => output.push_str("\\n"),
+                '\r' => output.push_str("\\r"),
+                '\t' => output.push_str("\\t"),
+                c if c.is_control() => {
+                    // Skip other control characters to avoid parse errors
+                }
+                _ => output.push(c),
+            }
+        } else {
+            if c == '"' {
+                in_string = true;
+            }
+            output.push(c);
+        }
     }
+    output
 }
 
 pub(crate) fn construct_prompt(req: &GenerateRequest) -> String {

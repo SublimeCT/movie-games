@@ -1,6 +1,6 @@
 use axum::{
     extract::{ConnectInfo, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -93,8 +93,15 @@ pub(crate) async fn generate_prompt(
 pub(crate) async fn generate(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<GenerateRequest>,
 ) -> Result<Json<MovieTemplate>, (StatusCode, Json<serde_json::Value>)> {
+    let client_ip = headers
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| addr.ip().to_string());
+
     let theme = payload
         .theme
         .as_deref()
@@ -167,7 +174,7 @@ pub(crate) async fn generate(
     }
     let request_id = begin_glm_request_log(
         &state.db,
-        &addr.ip().to_string(),
+        &client_ip,
         "/generate",
         payload_json,
         request_body["messages"][1]["content"]
@@ -405,8 +412,15 @@ struct ExpandWorldviewResponse {
 pub(crate) async fn expand_worldview(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<ExpandWorldviewRequest>,
 ) -> impl IntoResponse {
+    let client_ip = headers
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| addr.ip().to_string());
+
     let language = req.language.as_deref().unwrap_or("zh-CN");
     let prompt = if let Some(existing) = &req.synopsis {
         format!(
@@ -414,23 +428,23 @@ pub(crate) async fn expand_worldview(
             Task: Expand and refine the following Story Synopsis based on the theme '{}' .\n\
             Existing Synopsis: '{}'\n\
             Language: Output strictly in {}.\n\
-            Requirements:\n\
-            1. Length: MUST be concise, around 100-150 characters (in the target language).\n\
-            2. Consistency: STRICTLY PRESERVE all existing characters, relationships, and key plot points mentioned in the input.\n\
-            3. Expansion: Add more details to the world setting, atmosphere, and conflict escalation.\n\
-            4. Output: Pure text only, no prefixes/suffixes.\n\
+            Requirements:
+            1. Length: MUST be between 300 and 600 characters (in the target language).
+            2. Consistency: STRICTLY PRESERVE all existing characters, relationships, and key plot points mentioned in the input.
+            3. Expansion: Add more details to the world setting, atmosphere, and conflict escalation.
+            4. Output: Pure text only, no prefixes/suffixes.
             5. Tone: Engaging, cinematic, suspenseful.",
             req.theme, existing, language
         )
     } else {
         format!(
-            "Role: Professional Screenwriter / Novelist.\n\
-            Task: Write a concise Movie Synopsis (电影简介) for an interactive movie game based on the theme '{}' .\n\
-            Language: Output strictly in {}.\n\
-            Requirements:\n\
-            1. Length: MUST be concise, around 100-150 characters (in the target language).\n\
-            2. Content: Describe the world setting, main conflict, and atmosphere.\n\
-            3. Output: Pure text only, no prefixes/suffixes.\n\
+            "Role: Professional Screenwriter / Novelist.
+            Task: Write a concise Movie Synopsis (电影简介) for an interactive movie game based on the theme '{}' .
+            Language: Output strictly in {}.
+            Requirements:
+            1. Length: MUST be between 300 and 600 characters (in the target language).
+            2. Content: Describe the world setting, main conflict, and atmosphere.
+            3. Output: Pure text only, no prefixes/suffixes.
             4. Tone: Engaging, cinematic, suspenseful.",
             req.theme, language
         )
@@ -444,7 +458,7 @@ pub(crate) async fn expand_worldview(
 
     let request_id = match begin_glm_request_log(
         &state.db,
-        &addr.ip().to_string(),
+        &client_ip,
         "/expand/worldview",
         payload_json,
         &prompt,
@@ -518,8 +532,15 @@ struct ExpandCharacterResponse {
 pub(crate) async fn expand_character(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<ExpandCharacterRequest>,
 ) -> impl IntoResponse {
+    let client_ip = headers
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| addr.ip().to_string());
+
     let language = req.language.as_deref().unwrap_or("zh-CN");
     // Use worldview as the synopsis source since frontend sends it in 'worldview' field
     let synopsis_content = if !req.worldview.is_empty() {
@@ -538,15 +559,17 @@ pub(crate) async fn expand_character(
 {}
 
 要求：
-1. 角色基本信息（姓名、年龄、性别、职业、社会阶层）
-2. 外貌特征（用于电影镜头表现）
-3. 性格特质（优点、缺点、矛盾点）
-4. 角色的“表层目标”（他/她现在想要什么）
-5. 角色的“深层需求”（内心真正缺失的东西）
-6. 角色的创伤或过去经历（推动性格形成）
-7. 角色在故事中的功能（主角 / 反派 / 配角 / 镜像角色）
-8. 角色可能经历的转变弧线（开场 → 结尾）
-9. 一句能概括该角色的核心主题句
+1. 数量要求：至少生成 3 个主要角色（根据剧情复杂度可适当增加）。
+2. 角色基本信息（姓名、年龄、性别、职业、社会阶层）
+   - 性别字段是必填项，禁止为空！必须明确为 '男'、'女' 或 '其他'。
+3. 外貌特征（用于电影镜头表现）
+4. 性格特质（优点、缺点、矛盾点）
+5. 角色的“表层目标”（他/她现在想要什么）
+6. 角色的“深层需求”（内心真正缺失的东西）
+7. 角色的创伤或过去经历（推动性格形成）
+8. 角色在故事中的功能（主角 / 反派 / 配角 / 镜像角色）
+9. 角色可能经历的转变弧线（开场 → 结尾）
+10. 一句能概括该角色的核心主题句
 
 请避免模板化、脸谱化角色，强调现实逻辑与情感动机。
 
@@ -558,7 +581,7 @@ pub(crate) async fn expand_character(
 [
   {{
     \"name\": \"角色姓名\",
-    \"gender\": \"男/女 (必填)\",
+    \"gender\": \"男\", // 严禁为空！必须是 \"男\" 或 \"女\" 或 \"其他\"
     \"isMain\": true/false,
     \"description\": \"这里包含上述所有详细设定（外貌、性格、目标、创伤等），请组织成一段通顺的文字或使用换行符分隔。\"
   }}
@@ -573,15 +596,17 @@ pub(crate) async fn expand_character(
 请为一部【{}】电影，生成一个完整、立体、真实可信的角色设定。
 
 要求：
-1. 角色基本信息（姓名、年龄、性别、职业、社会阶层）
-2. 外貌特征（用于电影镜头表现）
-3. 性格特质（优点、缺点、矛盾点）
-4. 角色的“表层目标”（他/她现在想要什么）
-5. 角色的“深层需求”（内心真正缺失的东西）
-6. 角色的创伤或过去经历（推动性格形成）
-7. 角色在故事中的功能（主角 / 反派 / 配角 / 镜像角色）
-8. 角色可能经历的转变弧线（开场 → 结尾）
-9. 一句能概括该角色的核心主题句
+1. 数量要求：至少生成 3 个主要角色（根据剧情复杂度可适当增加）。
+2. 角色基本信息（姓名、年龄、性别、职业、社会阶层）
+   - 性别字段是必填项，禁止为空！必须明确为 '男'、'女' 或 '其他'。
+3. 外貌特征（用于电影镜头表现）
+4. 性格特质（优点、缺点、矛盾点）
+5. 角色的“表层目标”（他/她现在想要什么）
+6. 角色的“深层需求”（内心真正缺失的东西）
+7. 角色的创伤或过去经历（推动性格形成）
+8. 角色在故事中的功能（主角 / 反派 / 配角 / 镜像角色）
+9. 角色可能经历的转变弧线（开场 → 结尾）
+10. 一句能概括该角色的核心主题句
 
 请避免模板化、脸谱化角色，强调现实逻辑与情感动机。
 
@@ -593,7 +618,7 @@ pub(crate) async fn expand_character(
 [
   {{
     \"name\": \"角色姓名\",
-    \"gender\": \"男/女 (必填)\",
+    \"gender\": \"男\", // 严禁为空！必须是 \"男\" 或 \"女\" 或 \"其他\"
     \"isMain\": true/false,
     \"description\": \"这里包含上述所有详细设定（外貌、性格、目标、创伤等），请组织成一段通顺的文字或使用换行符分隔。\"
   }}
@@ -611,7 +636,7 @@ pub(crate) async fn expand_character(
 
     let request_id = match begin_glm_request_log(
         &state.db,
-        &addr.ip().to_string(),
+        &client_ip,
         "/expand/character",
         payload_json,
         &prompt,

@@ -24,6 +24,14 @@ pub(crate) fn construct_prompt(req: &GenerateRequest) -> String {
         .as_deref()
         .or(req.free_input.as_deref())
         .unwrap_or("Unknown Theme");
+    
+    let synopsis = req.synopsis.as_deref().unwrap_or("");
+    let full_topic = if !synopsis.is_empty() {
+        format!("Theme/Genre: {}\nSynopsis: {}", topic, synopsis)
+    } else {
+        format!("Theme/Genre: {}", topic)
+    };
+
     let language_tag = req.language.as_deref().unwrap_or("zh-CN");
     let language_label = if language_tag.to_lowercase().starts_with("zh") {
         "简体中文".to_string()
@@ -117,7 +125,7 @@ export interface Provenance {
 你的任务是根据用户提供的主题，创作一个完整的互动电影剧本，并将其直接输出为符合 TypeScript 接口定义的 JSON 格式。
 
 # 用户输入主题
-\"{}\"
+"{}"
 
 # 核心要求 (必须严格遵守)
 1. **第一人称叙事**：所有的 `node.content.text` 必须使用**第一人称 (\"我\")** 进行叙述。玩家就是主角，代入感必须极强。
@@ -144,7 +152,11 @@ export interface Provenance {
     - 两个选项的节点应该少于 50%。
     - 三个及以上选项的节点至少占比 60%。
     - 只有少于 20% 的节点存在指向相同节点的选项。
-9. **角色一致性 (极其重要)**：
+9. **节点角色出现频率硬约束（必须满足，否则输出视为错误）**：
+    - **严禁出现 0 个角色的节点**：每个节点必须至少包含 1 个角色。
+    - **绝大多数节点必须包含至少 2 个角色**：单人独白的场景（只有 1 个角色）的数量不得超过总节点数的 10%。
+    - 必须让角色之间发生频繁的互动、对话和冲突。
+10. **角色一致性 (极其重要)**：
     - 下面是用户提供的角色清单。你必须把这些角色写入顶层 `characters`。
     - **严禁创造新角色**：你只能使用清单里提供的角色。
     - **严禁修改角色**：name / gender / isMain 必须与清单严格一致。
@@ -191,6 +203,6 @@ export interface Provenance {
 
 开始创作！
 "#,
-        topic, language_label, protagonist_name, characters_json, types_def
+        full_topic, language_label, protagonist_name, characters_json, types_def
     )
 }

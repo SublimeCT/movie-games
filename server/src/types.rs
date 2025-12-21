@@ -114,7 +114,7 @@ pub struct MetaInfo {
 pub struct Character {
     pub id: String,
     pub name: String,
-    pub gender: Option<String>,
+    pub gender: String,
     pub age: u32,
     pub role: String,
     pub background: String,

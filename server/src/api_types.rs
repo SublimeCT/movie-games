@@ -33,7 +33,7 @@ pub(crate) struct GenerateRequest {
 pub(crate) struct CharacterInput {
     pub(crate) name: String,
     pub(crate) description: String,
-    pub(crate) gender: Option<String>,
+    pub(crate) gender: String,
     #[serde(rename = "isMain")]
     pub(crate) is_main: bool,
 }

@@ -226,7 +226,7 @@ const currentAgents = computed(() => {
             agents.push({
                 id: `mg_unknown_${idx}_${n}`,
                 name: n,
-                gender: undefined,
+                gender: '其他',
                 age: 0,
                 role: '',
                 background: '',

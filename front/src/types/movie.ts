@@ -69,7 +69,7 @@ export interface Character {
   name: string
 
   /** 角色性别 */
-  gender?: string
+  gender: string
 
   /** 角色年龄 */
   age: number

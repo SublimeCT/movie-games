@@ -6,7 +6,7 @@ import type { MovieTemplate } from '../types/movie';
 import { WavyBackground } from './ui/wavy-background';
 import { FluidCursor } from './ui/fluid-cursor';
 import CinematicLoader from './ui/CinematicLoader.vue';
-import { Import as ImportIcon, Settings as SettingsIcon, KeyRound, Link2, ClipboardCopy, X, Sparkles, Wand2 } from 'lucide-vue-next';
+import { Import as ImportIcon, Settings as SettingsIcon, KeyRound, Link2, ClipboardCopy, X, Sparkles, Wand2, HelpCircle } from 'lucide-vue-next';
 
 const emit = defineEmits<{
   (e: 'start', data: MovieTemplate): void
@@ -18,13 +18,18 @@ const theme = useStorage('mg_theme', '');
 const synopsis = useStorage('mg_synopsis', ''); // Renamed from worldview
 const selectedGenres = useStorage<string[]>('mg_genres', []); // Added genres
 const characters = useStorage<CharacterInput[]>('mg_characters', [
-  { name: '主角', description: '故事的核心人物', gender: 'Other', isMain: true }
+  { name: '主角', description: '故事的核心人物', gender: '男', isMain: true }
 ]);
 const goal = useStorage('mg_goal', '');
 const freeInput = useStorage('mg_free_input', '');
 const glmApiKey = useStorage('mg_glm_api_key', '');
 const glmBaseUrl = useStorage('mg_glm_base_url', 'https://open.bigmodel.cn/api/paas/v4/chat/completions');
 const glmModel = useStorage('mg_glm_model', 'glm-4.6v-flash');
+
+// Patch legacy data missing gender
+characters.value.forEach(c => {
+  if (!c.gender) c.gender = '其他';
+});
 
 // UI State (not persisted)
 const isLoading = ref(false);
@@ -41,6 +46,7 @@ const isImportOpen = ref(false);
 const importTab = ref<'paste' | 'file'>('paste');
 const importText = ref('');
 const importError = ref('');
+const isHelpOpen = ref(false);
 
 const isSettingsOpen = ref(false);
 const baseUrlError = ref('');
@@ -86,7 +92,7 @@ const addCustomGenre = () => {
 };
 
 const addCharacter = () => {
-  characters.value.push({ name: '', description: '', gender: 'Other', isMain: false });
+  characters.value.push({ name: '', description: '', gender: '其他', isMain: false });
 };
 
 const removeCharacter = (index: number) => {
@@ -211,6 +217,7 @@ const handleGenerate = async () => {
 const handleGeneratePrompt = async () => {
   const apiKey = glmApiKey.value.trim();
   const baseUrl = glmBaseUrl.value.trim();
+  const model = glmModel.value.trim();
   isPromptLoading.value = true;
   error.value = '';
   try {
@@ -227,6 +234,7 @@ const handleGeneratePrompt = async () => {
       size,
       apiKey: apiKey || undefined,
       baseUrl: baseUrl || undefined,
+      model: model || undefined,
     });
     promptText.value = text;
     isPromptOpen.value = true;
@@ -334,6 +342,84 @@ const copyPrompt = async () => {
                 </span>
               </button>
             </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Help Modal -->
+    <Transition enter-active-class="animate-in fade-in duration-200" leave-active-class="animate-out fade-out duration-150">
+      <div v-if="isHelpOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/80 backdrop-blur-md" @click="isHelpOpen = false"></div>
+        <div class="w-full max-w-2xl bg-neutral-900/90 border border-white/10 rounded-2xl overflow-hidden shadow-2xl relative z-10">
+          <div class="px-6 py-5 flex items-center justify-between border-b border-white/10 bg-gradient-to-r from-purple-900/20 to-transparent">
+            <div class="flex items-center gap-3">
+              <div class="p-2 rounded-lg bg-purple-500/20">
+                <Sparkles class="w-5 h-5 text-purple-300" />
+              </div>
+              <div>
+                <h3 class="text-lg font-bold text-white tracking-tight">Design Philosophy</h3>
+                <p class="text-xs text-white/50 uppercase tracking-widest font-semibold">Creating Cinematic Experiences</p>
+              </div>
+            </div>
+            <button @click="isHelpOpen = false" class="p-2 rounded-full hover:bg-white/10 transition-colors">
+              <X class="w-5 h-5 text-white/60" />
+            </button>
+          </div>
+          
+          <div class="p-8 max-h-[70vh] overflow-y-auto space-y-8 custom-scrollbar">
+            <div class="space-y-4">
+              <h4 class="text-sm font-bold text-purple-400 uppercase tracking-widest border-b border-purple-500/20 pb-2 mb-4">Core Mechanics</h4>
+              <p class="text-neutral-300 leading-relaxed">
+                <strong class="text-white">Movie Games</strong> transforms your ideas into interactive cinema. By defining a theme, characters, and key plot points, our AI engine constructs a complex narrative tree with branching storylines and multiple endings.
+              </p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div class="space-y-3">
+                <div class="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center border border-blue-500/20">
+                  <Wand2 class="w-5 h-5 text-blue-400" />
+                </div>
+                <h5 class="text-white font-bold">AI Expansion</h5>
+                <p class="text-sm text-neutral-400 leading-relaxed">
+                  Use the <span class="text-blue-300">AI 智能扩写</span> button to automatically flesh out your synopsis or generate deep, conflicted characters based on your theme.
+                </p>
+              </div>
+
+              <div class="space-y-3">
+                <div class="w-10 h-10 rounded-full bg-pink-500/10 flex items-center justify-center border border-pink-500/20">
+                  <ImportIcon class="w-5 h-5 text-pink-400" />
+                </div>
+                <h5 class="text-white font-bold">JSON Import</h5>
+                <p class="text-sm text-neutral-400 leading-relaxed">
+                  Already have a script? Import existing <code class="bg-neutral-800 px-1 py-0.5 rounded text-xs text-pink-300">MovieTemplate</code> JSON files to instantly visualize or remake your story.
+                </p>
+              </div>
+            </div>
+
+            <div class="space-y-4">
+               <h4 class="text-sm font-bold text-purple-400 uppercase tracking-widest border-b border-purple-500/20 pb-2 mb-4">Tips for Best Results</h4>
+               <ul class="space-y-3 text-neutral-300 text-sm">
+                 <li class="flex gap-3">
+                   <span class="w-1.5 h-1.5 rounded-full bg-purple-500 mt-2 flex-shrink-0"></span>
+                   <span>Provide a detailed <strong>Synopsis</strong>. The more context you give, the more coherent the generated plot will be.</span>
+                 </li>
+                 <li class="flex gap-3">
+                   <span class="w-1.5 h-1.5 rounded-full bg-purple-500 mt-2 flex-shrink-0"></span>
+                   <span>Create at least <strong>3 Characters</strong> for rich interactions. Define their "Deep Needs" in the description.</span>
+                 </li>
+                 <li class="flex gap-3">
+                   <span class="w-1.5 h-1.5 rounded-full bg-purple-500 mt-2 flex-shrink-0"></span>
+                   <span>Use the <strong>Generate Prompt Only</strong> feature if you want to inspect or manually tweak the prompt before sending it to the AI.</span>
+                 </li>
+               </ul>
+            </div>
+          </div>
+
+          <div class="px-6 py-4 bg-black/20 border-t border-white/5 flex justify-end">
+            <button @click="isHelpOpen = false" class="px-6 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium transition-colors">
+              Got it
+            </button>
           </div>
         </div>
       </div>
@@ -503,6 +589,13 @@ const copyPrompt = async () => {
         <!-- Header -->
         <header class="mb-12 relative">
             <div class="absolute top-0 right-0 flex items-center gap-3">
+                <button
+                    @click="isHelpOpen = true"
+                    class="p-2 rounded-full bg-black/30 backdrop-blur-md border border-white/10 hover:bg-white/10 hover:border-purple-500/50 transition-all group"
+                    title="帮助"
+                >
+                    <HelpCircle class="w-5 h-5 text-white/70 group-hover:text-white transition-colors" />
+                </button>
                 <button
                     @click="openImport"
                     class="p-2 rounded-full bg-black/30 backdrop-blur-md border border-white/10 hover:bg-white/10 hover:border-purple-500/50 transition-all group"
@@ -697,7 +790,7 @@ const copyPrompt = async () => {
                     :disabled="isLoading"
                     class="w-full py-5 rounded-xl bg-gradient-to-r from-purple-600 via-pink-600 to-purple-600 bg-[length:200%_auto] animate-gradient text-white font-black text-xl hover:shadow-[0_0_30px_rgba(168,85,247,0.4)] hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 flex justify-center items-center gap-3 relative overflow-hidden group"
                 >
-                    <div class="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-500 skew-y-12"></div>
+                    <div class="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-500"></div>
                     <svg v-if="isLoading" viewBox="0 0 24 24" fill="none" class="w-6 h-6 text-white/95 animate-spin relative z-10">
                       <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" class="opacity-20"/>
                       <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />

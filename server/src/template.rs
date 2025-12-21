@@ -70,7 +70,7 @@ impl From<CharacterLite> for types::Character {
         types::Character {
             id: lite.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             name: lite.name.unwrap_or_else(|| "Unknown".to_string()),
-            gender: lite.gender,
+            gender: lite.gender.unwrap_or_else(|| "Unknown".to_string()),
             age: lite
                 .age
                 .and_then(|v| v.as_u64().map(|n| n as u32))
@@ -533,7 +533,7 @@ pub(crate) fn ensure_minimum_game_graph(
         .as_ref()
         .and_then(|cs| cs.iter().find(|c| c.is_main).or_else(|| cs.first()))
         .map(|c| (c.name.clone(), c.gender.clone()))
-        .unwrap_or_else(|| ("主角".to_string(), Some("Male".to_string())));
+        .unwrap_or_else(|| ("主角".to_string(), "男".to_string()));
 
     if template.endings.is_empty() {
         template.endings.insert(
@@ -666,7 +666,7 @@ pub(crate) fn enforce_request_character_consistency(
         return;
     }
 
-    let canonical_gender = protagonist.gender.as_deref().unwrap_or("").trim().to_string();
+    let canonical_gender = protagonist.gender.trim().to_string();
     let placeholders = [
         "玩家",
         "主角",
@@ -691,7 +691,7 @@ pub(crate) fn enforce_request_character_consistency(
         if placeholders.iter().any(|p| p == &c.name) {
             c.name = canonical_name.clone();
             if !canonical_gender.is_empty() {
-                c.gender = Some(canonical_gender.clone());
+                c.gender = canonical_gender.clone();
             }
         }
     }
@@ -716,10 +716,10 @@ pub(crate) fn ensure_request_characters_present(
         if exists {
             for c in template.characters.values_mut() {
                 if c.name.trim() == name {
-                    if c.gender.as_deref().unwrap_or("").trim().is_empty() {
-                        let g = rc.gender.as_deref().unwrap_or("").trim();
+                    if c.gender.trim().is_empty() {
+                        let g = rc.gender.trim();
                         if !g.is_empty() {
-                            c.gender = Some(g.to_string());
+                            c.gender = g.to_string();
                         }
                     }
                 }
@@ -744,11 +744,11 @@ pub(crate) fn ensure_request_characters_present(
             key
         };
 
-        let g = rc.gender.as_deref().unwrap_or("").trim();
+        let g = rc.gender.trim();
         let gender = if g.is_empty() {
-            None
+            "Unknown".to_string()
         } else {
-            Some(g.to_string())
+            g.to_string()
         };
 
         template.characters.insert(

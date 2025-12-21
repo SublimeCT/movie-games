@@ -195,7 +195,7 @@ fn select_protagonists(req_chars: Option<&Vec<CharacterInput>>) -> Vec<Protagoni
         .map(|c| ProtagonistSpec {
             name: c.name.trim().to_string(),
             description: c.description.trim().to_string(),
-            gender: c.gender.as_deref().unwrap_or("").trim().to_string(),
+            gender: c.gender.trim().to_string(),
         })
         .filter(|c| !c.name.is_empty() && !c.description.is_empty())
         .collect()

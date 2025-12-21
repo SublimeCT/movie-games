@@ -182,9 +182,13 @@ const treeGraph = computed(() => {
     if (endingKey && knownEndingKeys.has(endingKey)) {
       list.push({ to: endingKey, label: 'ending' });
     }
+    const seenTargets = new Set<string>();
     for (const c of n.choices || []) {
       const to = (c.nextNodeId || '').trim();
       if (!to) continue;
+      if (seenTargets.has(to)) continue;
+      seenTargets.add(to);
+      
       if (nodes[to]) list.push({ to, label: c.text });
       else if (knownEndingKeys.has(to)) list.push({ to, label: c.text });
     }
@@ -336,7 +340,7 @@ const onWheel = (e: WheelEvent) => {
   const delta = -e.deltaY;
   const factor = delta > 0 ? 1.08 : 0.92;
   const prevZoom = zoom.value;
-  const nextZoom = clamp(prevZoom * factor, 0.4, 2.2);
+  const nextZoom = clamp(prevZoom * factor, 0.1, 4.0);
 
   const wx = (mx - pan.value.x) / prevZoom;
   const wy = (my - pan.value.y) / prevZoom;

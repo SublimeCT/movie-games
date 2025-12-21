@@ -7,7 +7,7 @@
     "dev:backend": "cd server && cargo run",
     "build:frontend": "cd front && pnpm build",
     "build:backend": "cd server && cargo build --release",
-    "build:deploy": "pnpm build:frontend && pnpm build:backend && rsync -avz ./front/dist/ root@47.96.124.139:/srv/movie-games-dist/dist/ && rsync -avz ./server/target/release/server root@47.96.124.139:/srv/movie-games-server/server",
+    "build": "pnpm build:frontend && pnpm build:backend",
     "dev": "concurrently \"pnpm dev:backend\" \"pnpm dev:frontend\"",
     "install:frontend": "cd front && pnpm install"
   },

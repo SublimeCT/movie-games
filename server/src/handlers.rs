@@ -4,12 +4,12 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use reqwest::Client;
 use serde::Serialize;
 use serde_json::json;
+use sqlx::PgPool;
 use std::net::SocketAddr;
-use std::time::Duration;
 use url::Url;
+use uuid::Uuid;
 
 use crate::api_types::{
     CharacterInput, ExpandCharacterRequest, ExpandWorldviewRequest, GenerateRequest,
@@ -28,6 +28,47 @@ use crate::template::{
     MovieTemplateLite,
 };
 use crate::types::MovieTemplate;
+
+struct GlmRequestGuard {
+    db: PgPool,
+    request_id: Uuid,
+    consumed: bool,
+}
+
+impl GlmRequestGuard {
+    fn new(db: PgPool, request_id: Uuid) -> Self {
+        Self {
+            db,
+            request_id,
+            consumed: false,
+        }
+    }
+
+    fn consume(mut self) {
+        self.consumed = true;
+    }
+}
+
+impl Drop for GlmRequestGuard {
+    fn drop(&mut self) {
+        if !self.consumed {
+            let db = self.db.clone();
+            let id = self.request_id;
+            // Spawn a task to update status to cancel
+            tokio::spawn(async move {
+                finish_glm_request_log(
+                    &db,
+                    id,
+                    "cancel",
+                    None,
+                    Some("Client disconnected or request cancelled"),
+                    None,
+                )
+                .await;
+            });
+        }
+    }
+}
 
 fn glm_api_key() -> Result<String, StatusCode> {
     std::env::var("GLM_API_KEY")
@@ -101,6 +142,11 @@ pub(crate) async fn generate(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .unwrap_or_else(|| addr.ip().to_string());
+    
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
 
     let theme = payload
         .theme
@@ -123,14 +169,14 @@ pub(crate) async fn generate(
         "glm-4.6v-flash"
     };
 
-    println!("Init GLM Client with 300s timeout...");
-    let client = Client::builder()
-        .timeout(Duration::from_secs(300))
+    println!("Init GLM Client with 240s timeout...");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(240))
         .build()
-        .map_err(|_| {
+        .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "Failed to build client" })),
+                Json(json!({ "error": e.to_string() })),
             )
         })?;
 
@@ -175,6 +221,7 @@ pub(crate) async fn generate(
     let request_id = begin_glm_request_log(
         &state.db,
         &client_ip,
+        user_agent,
         "/generate",
         payload_json,
         request_body["messages"][1]["content"]
@@ -184,10 +231,13 @@ pub(crate) async fn generate(
     )
     .await?;
 
+    let guard = GlmRequestGuard::new(state.db.clone(), request_id);
+
     let endpoint = match resolve_glm_endpoint(payload.base_url.as_deref()) {
         Ok(v) => v,
         Err(_) => {
             let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,
@@ -208,6 +258,7 @@ pub(crate) async fn generate(
         Ok(v) => v,
         Err(_) => {
             let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,
@@ -225,7 +276,7 @@ pub(crate) async fn generate(
     };
 
     let response = match client
-        .post(endpoint)
+        .post(&endpoint)
         .header("Authorization", format!("Bearer {}", api_key))
         .json(&request_body)
         .send()
@@ -234,6 +285,7 @@ pub(crate) async fn generate(
         Ok(r) => r,
         Err(e) => {
             eprintln!("GLM Request failed: {}", e);
+            guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,
@@ -259,6 +311,7 @@ pub(crate) async fn generate(
         let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
 
         if glm::contains_limit(&error_text) {
+            guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,
@@ -274,6 +327,7 @@ pub(crate) async fn generate(
             ));
         }
 
+        guard.consume();
         finish_glm_request_log(
             &state.db,
             request_id,
@@ -294,6 +348,7 @@ pub(crate) async fn generate(
         Ok(v) => v,
         Err(_) => {
             let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
+            guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,
@@ -320,6 +375,7 @@ pub(crate) async fn generate(
         Some(c) => c,
         None => {
             let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
+            guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,
@@ -386,37 +442,54 @@ pub(crate) async fn generate(
     normalize_template_endings(&mut template);
     sanitize_template_graph(&mut template);
 
-    let size = normalize_cogview_size(payload.size.as_deref());
-    let synopsis_for_image = pick_background_prompt(&payload, &template);
-    match generate_scene_background_base64(
-        &client,
-        &synopsis_for_image,
-        language_tag,
-        &size,
-        &api_key,
-    )
-    .await
-    {
-        Ok(img) => template.background_image_base64 = Some(img),
-        Err(_) => {
-            template.background_image_base64 = Some(fallback_background_data_uri(
-                &template.title,
-                &synopsis_for_image,
-            ))
-        }
-    }
+    // Image generation logic
+    let should_generate_images = if using_override_key {
+        let standard_url = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+        let input_url = payload.base_url.as_deref().unwrap_or("").trim();
+        input_url.is_empty() || input_url == standard_url
+    } else {
+        true
+    };
 
-    maybe_attach_generated_avatars(
-        &client,
-        &mut template,
-        payload.characters.as_ref(),
-        language_tag,
-        &api_key,
-    )
-    .await;
+    if should_generate_images {
+        let size = normalize_cogview_size(payload.size.as_deref());
+        let synopsis_for_image = pick_background_prompt(&payload, &template);
+        match generate_scene_background_base64(
+            &client,
+            &synopsis_for_image,
+            language_tag,
+            &size,
+            &api_key,
+        )
+        .await
+        {
+            Ok(img) => template.background_image_base64 = Some(img),
+            Err(_) => {
+                template.background_image_base64 = Some(fallback_background_data_uri(
+                    &template.title,
+                    &synopsis_for_image,
+                ))
+            }
+        }
+
+        maybe_attach_generated_avatars(
+            &client,
+            &mut template,
+            payload.characters.as_ref(),
+            language_tag,
+            &api_key,
+        )
+        .await;
+    } else {
+         template.background_image_base64 = Some(fallback_background_data_uri(
+            &template.title,
+            &template.meta.synopsis,
+        ));
+    }
 
     ensure_avatar_fallbacks(&mut template, payload.characters.as_ref());
 
+    guard.consume();
     finish_glm_request_log(
         &state.db,
         request_id,
@@ -446,6 +519,11 @@ pub(crate) async fn expand_worldview(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .unwrap_or_else(|| addr.ip().to_string());
+    
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
 
     let language = req.language.as_deref().unwrap_or("zh-CN");
     let prompt = if let Some(existing) = &req.synopsis {
@@ -485,6 +563,7 @@ pub(crate) async fn expand_worldview(
     let request_id = match begin_glm_request_log(
         &state.db,
         &client_ip,
+        user_agent,
         "/expand/worldview",
         payload_json,
         &prompt,
@@ -496,11 +575,14 @@ pub(crate) async fn expand_worldview(
         Err(e) => return e.into_response(),
     };
 
+    let guard = GlmRequestGuard::new(state.db.clone(), request_id);
+
     let start = std::time::Instant::now();
     match glm::call_glm_with_api_key(prompt, false, req.api_key.clone(), req.base_url.clone(), req.model.clone()).await
     {
         Ok(text) => {
             let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,
@@ -515,6 +597,7 @@ pub(crate) async fn expand_worldview(
         Err(e) => {
             let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
             if e == "Invalid baseUrl" {
+                guard.consume();
                 finish_glm_request_log(
                     &state.db,
                     request_id,
@@ -536,6 +619,7 @@ pub(crate) async fn expand_worldview(
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
+            guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,
@@ -566,6 +650,11 @@ pub(crate) async fn expand_character(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .unwrap_or_else(|| addr.ip().to_string());
+    
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
 
     let language = req.language.as_deref().unwrap_or("zh-CN");
     // Use worldview as the synopsis source since frontend sends it in 'worldview' field
@@ -663,6 +752,7 @@ pub(crate) async fn expand_character(
     let request_id = match begin_glm_request_log(
         &state.db,
         &client_ip,
+        user_agent,
         "/expand/character",
         payload_json,
         &prompt,
@@ -673,6 +763,8 @@ pub(crate) async fn expand_character(
         Ok(id) => id,
         Err(e) => return e.into_response(),
     };
+
+    let guard = GlmRequestGuard::new(state.db.clone(), request_id);
 
     let start = std::time::Instant::now();
     let (base_url_arg, model_arg) = if using_override_key {
@@ -688,6 +780,7 @@ pub(crate) async fn expand_character(
             match serde_json::from_str::<Vec<CharacterInput>>(&clean) {
                 Ok(chars) => {
                     let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+                    guard.consume();
                     finish_glm_request_log(
                         &state.db,
                         request_id,
@@ -701,6 +794,7 @@ pub(crate) async fn expand_character(
                 }
                 Err(e) => {
                     let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+                    guard.consume();
                     finish_glm_request_log(
                         &state.db,
                         request_id,
@@ -721,6 +815,7 @@ pub(crate) async fn expand_character(
         Err(e) => {
             let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
             if e == "Invalid baseUrl" {
+                guard.consume();
                 finish_glm_request_log(
                     &state.db,
                     request_id,
@@ -742,6 +837,7 @@ pub(crate) async fn expand_character(
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
+            guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,

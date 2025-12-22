@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router';
-import Home from '../components/Home.vue';
-import Game from '../components/Game.vue';
 import EndingPage from '../components/Ending.vue';
+import Game from '../components/Game.vue';
+import Home from '../components/Home.vue';
 
 const router = createRouter({
   history: createWebHistory(),

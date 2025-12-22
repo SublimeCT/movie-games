@@ -1,1 +1,1 @@
-export { default as WavyBackground } from "./WavyBackground.vue";
+export { default as WavyBackground } from './WavyBackground.vue';

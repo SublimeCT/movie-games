@@ -1,0 +1,1 @@
+ALTER TABLE glm_requests ADD COLUMN IF NOT EXISTS user_agent TEXT;

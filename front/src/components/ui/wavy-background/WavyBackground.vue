@@ -14,10 +14,11 @@
 
 <script setup lang="ts">
 // @ts-nocheck
-import { createNoise3D } from "simplex-noise";
-import { cn } from "@/lib/utils";
-import { ref, onMounted, onBeforeUnmount } from "vue";
-import { templateRef } from "@vueuse/core";
+
+import { templateRef } from '@vueuse/core';
+import { createNoise3D } from 'simplex-noise';
+import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { cn } from '@/lib/utils';
 
 interface WavyBackgroundProps {
   class?: string;
@@ -26,40 +27,41 @@ interface WavyBackgroundProps {
   waveWidth?: number;
   backgroundFill?: string;
   blur?: number;
-  speed?: "slow" | "fast";
+  speed?: 'slow' | 'fast';
   waveOpacity?: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: Allow any for generic props
   [key: string]: any;
 }
 
 const props = withDefaults(defineProps<WavyBackgroundProps>(), {
-  colors: () => ["#38bdf8", "#818cf8", "#c084fc", "#e879f9", "#22d3ee"],
+  colors: () => ['#38bdf8', '#818cf8', '#c084fc', '#e879f9', '#22d3ee'],
   waveWidth: 50,
-  backgroundFill: "black",
+  backgroundFill: 'black',
   blur: 10,
-  speed: "fast",
+  speed: 'fast',
   waveOpacity: 0.5,
 });
 
 const noise = createNoise3D();
 
 // Declare variables with null
-let w: number,
-  h: number,
-  nt = 0,
-  ctx: CanvasRenderingContext2D | null = null;
+let w: number;
+let h: number;
+let nt = 0;
+let ctx: CanvasRenderingContext2D | null = null;
 let animationId: number;
 
-const canvasRef = templateRef<HTMLCanvasElement | null>("canvasRef");
+const canvasRef = templateRef<HTMLCanvasElement | null>('canvasRef');
 
 function getSpeed(): number {
-  return props.speed === "slow" ? 0.001 : 0.002;
+  return props.speed === 'slow' ? 0.001 : 0.002;
 }
 
 function init() {
   const canvas = canvasRef.value;
   if (canvas) {
-    ctx = canvas.getContext("2d");
+    ctx = canvas.getContext('2d');
     if (ctx) {
       const parent = canvasRef.value.parentElement;
       if (parent) {
@@ -69,11 +71,11 @@ function init() {
 
       ctx.filter = `blur(${props.blur}px)`;
       window.onresize = () => {
-        if (parent) {
-          w = ctx!.canvas.width = parent.clientWidth;
-          h = ctx!.canvas.height = parent.clientHeight;
+        if (parent && ctx) {
+          w = ctx.canvas.width = parent.clientWidth;
+          h = ctx.canvas.height = parent.clientHeight;
+          ctx.filter = `blur(${props.blur}px)`;
         }
-        ctx!.filter = `blur(${props.blur}px)`;
       };
       render();
     }
@@ -83,21 +85,25 @@ function init() {
 function drawWave(n: number) {
   nt += getSpeed();
   for (let i = 0; i < n; i++) {
-    ctx!.beginPath();
+    ctx?.beginPath();
+    // biome-ignore lint/style/noNonNullAssertion: Props are defined
     ctx!.lineWidth = props.waveWidth!;
-    ctx!.strokeStyle = props.colors[i % props.colors!.length];
+    // biome-ignore lint/style/noNonNullAssertion: Props are defined
+    ctx!.strokeStyle = props.colors[i % props.colors?.length];
     for (let x = 0; x < w; x += 5) {
       const y = noise(x / 800, 0.3 * i, nt) * 100;
-      ctx!.lineTo(x, y + h * 0.5); // Adjust for height, at 50% of the container
+      ctx?.lineTo(x, y + h * 0.5); // Adjust for height, at 50% of the container
     }
-    ctx!.stroke();
-    ctx!.closePath();
+    ctx?.stroke();
+    ctx?.closePath();
   }
 }
 
 function render() {
   if (ctx) {
+    // biome-ignore lint/style/noNonNullAssertion: Props are defined
     ctx.fillStyle = props.backgroundFill!;
+    // biome-ignore lint/style/noNonNullAssertion: Props are defined
     ctx.globalAlpha = props.waveOpacity!;
     ctx.fillRect(0, 0, w, h);
     drawWave(5);
@@ -112,9 +118,9 @@ onBeforeUnmount(() => {
 const isSafari = ref(false);
 onMounted(() => {
   isSafari.value =
-    typeof window !== "undefined" &&
-    navigator.userAgent.includes("Safari") &&
-    !navigator.userAgent.includes("Chrome");
+    typeof window !== 'undefined' &&
+    navigator.userAgent.includes('Safari') &&
+    !navigator.userAgent.includes('Chrome');
 
   init();
 });

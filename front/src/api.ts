@@ -1,4 +1,3 @@
-
 import type { MovieTemplate } from './types/movie';
 
 // 生产环境使用 /api 前缀 (由 Nginx 转发)
@@ -10,7 +9,12 @@ export class ApiError extends Error {
   code?: string;
   payload?: unknown;
 
-  constructor(status: number, message: string, code?: string, payload?: unknown) {
+  constructor(
+    status: number,
+    message: string,
+    code?: string,
+    payload?: unknown,
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
@@ -25,7 +29,6 @@ export interface GenerateRequest {
   synopsis?: string; // Renamed from worldview
   genre?: string[]; // Added
   characters?: CharacterInput[];
-  goal?: string;
   freeInput?: string;
   language?: string;
   size?: '1024x1024' | '864x1152' | '1152x864';
@@ -47,7 +50,10 @@ async function parseApiError(response: Response): Promise<ApiError> {
     const message = json.error || text || `API Error: ${response.status}`;
     return new ApiError(response.status, message, json.code, json);
   } catch {
-    return new ApiError(response.status, text || `API Error: ${response.status}`);
+    return new ApiError(
+      response.status,
+      text || `API Error: ${response.status}`,
+    );
   }
 }
 
@@ -58,7 +64,9 @@ export interface CharacterInput {
   isMain: boolean;
 }
 
-export async function generateGame(req: GenerateRequest): Promise<MovieTemplate> {
+export async function generateGame(
+  req: GenerateRequest,
+): Promise<MovieTemplate> {
   const response = await fetch(`${API_BASE}/generate`, {
     method: 'POST',
     headers: {
@@ -94,14 +102,21 @@ export async function expandSynopsis(
   baseUrl?: string,
   model?: string,
 ): Promise<string> {
-    const response = await fetch(`${API_BASE}/expand/worldview`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ theme, synopsis: currentSynopsis, language, apiKey, baseUrl, model }) 
-    });
-    if (!response.ok) throw await parseApiError(response);
-    const data = (await response.json()) as { worldview: string };
-    return data.worldview;
+  const response = await fetch(`${API_BASE}/expand/worldview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      theme,
+      synopsis: currentSynopsis,
+      language,
+      apiKey,
+      baseUrl,
+      model,
+    }),
+  });
+  if (!response.ok) throw await parseApiError(response);
+  const data = (await response.json()) as { worldview: string };
+  return data.worldview;
 }
 
 export async function expandCharacter(
@@ -113,20 +128,20 @@ export async function expandCharacter(
   baseUrl?: string,
   model?: string,
 ): Promise<CharacterInput[]> {
-    const response = await fetch(`${API_BASE}/expand/character`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-            theme, 
-            worldview: synopsis, 
-            existingCharacters, 
-            language, 
-            apiKey, 
-            baseUrl,
-            model 
-        })
-    });
-    if (!response.ok) throw await parseApiError(response);
-    const data = await response.json();
-    return data.characters;
+  const response = await fetch(`${API_BASE}/expand/character`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      theme,
+      worldview: synopsis,
+      existingCharacters,
+      language,
+      apiKey,
+      baseUrl,
+      model,
+    }),
+  });
+  if (!response.ok) throw await parseApiError(response);
+  const data = await response.json();
+  return data.characters;
 }

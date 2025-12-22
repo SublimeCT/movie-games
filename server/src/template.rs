@@ -87,31 +87,19 @@ impl From<CharacterLite> for types::Character {
 struct StoryNodeLite {
     id: Option<String>,
     node_id: Option<String>,
-    content: Option<NodeContentLite>,
+    content: Option<String>,
     ending_key: Option<String>,
+    level: Option<u32>,
     characters: Option<Vec<String>>,
     choices: Option<Vec<ChoiceLite>>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NodeContentLite {
-    text: Option<String>,
-    notes: Option<String>,
 }
 
 fn convert_node_lite(key: String, lite: StoryNodeLite) -> types::StoryNode {
     types::StoryNode {
         id: lite.id.or(lite.node_id).unwrap_or(key),
-        content: types::NodeContent {
-            text: lite
-                .content
-                .as_ref()
-                .and_then(|c| c.text.clone())
-                .unwrap_or_else(|| "...".to_string()),
-            notes: lite.content.as_ref().and_then(|c| c.notes.clone()),
-        },
+        content: lite.content.unwrap_or_else(|| "...".to_string()),
         ending_key: lite.ending_key,
+        level: lite.level,
         characters: lite.characters,
         choices: lite
             .choices
@@ -345,7 +333,7 @@ pub(crate) fn sanitize_template_graph(template: &mut MovieTemplate) {
             continue;
         };
 
-        let text = node.content.text.trim().to_string();
+        let text = node.content.trim().to_string();
         let mut cparts: Vec<String> = node
             .choices
             .iter()
@@ -578,11 +566,9 @@ pub(crate) fn ensure_minimum_game_graph(
             "n_start".to_string(),
             types::StoryNode {
                 id: "n_start".to_string(),
-                content: types::NodeContent {
-                    text: "下班的电梯门合上那一刻，我手机震了一下。屏幕上只有一句：‘回来一趟。’我盯着那行字，胃里像被拧了一把。回去，就等于把自己再塞回那间会议室；不回去，明天的账只会更难算。门外的风很冷，我却更怕那句没有语气的命令。".to_string(),
-                    notes: None,
-                },
+                content: "下班的电梯门合上那一刻，我手机震了一下。屏幕上只有一句：‘回来一趟。’我盯着那行字，胃里像被拧了一把。回去，就等于把自己再塞回那间会议室；不回去，明天的账只会更难算。门外的风很冷，我却更怕那句没有语气的命令。".to_string(),
                 ending_key: None,
+                level: Some(1),
                 characters: Some(vec![protagonist_name.clone()]),
                 choices: vec![
                     types::Choice {
@@ -601,11 +587,9 @@ pub(crate) fn ensure_minimum_game_graph(
             "n_confront".to_string(),
             types::StoryNode {
                 id: "n_confront".to_string(),
-                content: types::NodeContent {
-                    text: "我转身往回走，每一步都像踩在自己心虚上。进门前我深吸一口气：今天的锅我不背，但我也不躲。对方的目光压过来时，我把手心里的汗收住，先把边界摆出来。".to_string(),
-                    notes: None,
-                },
+                content: "我转身往回走，每一步都像踩在自己心虚上。进门前我深吸一口气：今天的锅我不背，但我也不躲。对方的目光压过来时，我把手心里的汗收住，先把边界摆出来。".to_string(),
                 ending_key: None,
+                level: Some(2),
                 characters: Some(vec![protagonist_name.clone()]),
                 choices: vec![
                     types::Choice {
@@ -624,11 +608,9 @@ pub(crate) fn ensure_minimum_game_graph(
             "n_escape".to_string(),
             types::StoryNode {
                 id: "n_escape".to_string(),
-                content: types::NodeContent {
-                    text: "我把手机塞进兜里，假装没听见。地铁的轰鸣把我脑子里那句‘回来’冲得更响。我知道自己在拖，但我现在只想把今天结束掉。可越走越快，我越清楚：明天只会更糟。".to_string(),
-                    notes: None,
-                },
+                content: "我把手机塞进兜里，假装没听见。地铁的轰鸣把我脑子里那句‘回来’冲得更响。我知道自己在拖，但我现在只想把今天结束掉。可越走越快，我越清楚：明天只会更糟。".to_string(),
                 ending_key: None,
+                level: Some(2),
                 characters: Some(vec![protagonist_name.clone()]),
                 choices: vec![
                     types::Choice {

@@ -1,33 +1,60 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
 import { useStorage } from '@vueuse/core';
-import { generateGame, generatePrompt, expandSynopsis, expandCharacter, ApiError, type CharacterInput } from '../api';
+import {
+  AlertCircle,
+  ClipboardCopy,
+  HelpCircle,
+  Import as ImportIcon,
+  KeyRound,
+  Link2,
+  Settings as SettingsIcon,
+  Sparkles,
+  Wand2,
+  X,
+} from 'lucide-vue-next';
+import { ref, watch } from 'vue';
+import {
+  ApiError,
+  type CharacterInput,
+  expandCharacter,
+  expandSynopsis,
+  generateGame,
+  generatePrompt,
+} from '../api';
 import type { MovieTemplate } from '../types/movie';
-import { WavyBackground } from './ui/wavy-background';
-import { FluidCursor } from './ui/fluid-cursor';
 import CinematicLoader from './ui/CinematicLoader.vue';
-import { Import as ImportIcon, Settings as SettingsIcon, KeyRound, Link2, ClipboardCopy, X, Sparkles, Wand2, HelpCircle } from 'lucide-vue-next';
+import { FluidCursor } from './ui/fluid-cursor';
+import { WavyBackground } from './ui/wavy-background';
 
-const emit = defineEmits<{
-  (e: 'start', data: MovieTemplate): void
-}>();
+const emit = defineEmits<(e: 'start', data: MovieTemplate) => void>();
 
 // Persisted State using useStorage
+/** Game mode selection: 'wizard' for guided creation, 'free' for free text input */
 const mode = useStorage<'wizard' | 'free'>('mg_mode', 'wizard');
+/** The main theme or topic of the movie game */
 const theme = useStorage('mg_theme', '');
+/** The detailed synopsis or storyline */
 const synopsis = useStorage('mg_synopsis', ''); // Renamed from worldview
+/** Selected genres for the movie */
 const selectedGenres = useStorage<string[]>('mg_genres', []); // Added genres
+/** List of characters involved in the story */
 const characters = useStorage<CharacterInput[]>('mg_characters', [
-  { name: '主角', description: '故事的核心人物', gender: '男', isMain: true }
+  { name: '主角', description: '故事的核心人物', gender: '男', isMain: true },
 ]);
-const goal = useStorage('mg_goal', '');
+/** Free input text for 'free' mode */
 const freeInput = useStorage('mg_free_input', '');
+/** API key for GLM service */
 const glmApiKey = useStorage('mg_glm_api_key', '');
-const glmBaseUrl = useStorage('mg_glm_base_url', 'https://open.bigmodel.cn/api/paas/v4/chat/completions');
+/** Base URL for GLM service */
+const glmBaseUrl = useStorage(
+  'mg_glm_base_url',
+  'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+);
+/** Selected GLM model */
 const glmModel = useStorage('mg_glm_model', 'glm-4.6v-flash');
 
 // Patch legacy data missing gender
-characters.value.forEach(c => {
+characters.value.forEach((c) => {
   if (!c.gender) c.gender = '其他';
 });
 
@@ -51,6 +78,11 @@ const isHelpOpen = ref(false);
 const isSettingsOpen = ref(false);
 const baseUrlError = ref('');
 
+/**
+ * Validates the custom Base URL.
+ * Checks if the URL is well-formed.
+ * @returns {boolean} True if valid or empty, false otherwise.
+ */
 const validateBaseUrl = () => {
   const url = glmBaseUrl.value.trim();
   if (!url) {
@@ -72,13 +104,24 @@ watch(glmBaseUrl, () => {
 });
 
 const availableGenres = [
-  '科幻', '剧情', '爱情', '悬疑', '喜剧', '青春', '历史', '冒险', '武侠', '伦理', '悲剧', '职场'
+  '科幻',
+  '剧情',
+  '爱情',
+  '悬疑',
+  '喜剧',
+  '青春',
+  '历史',
+  '冒险',
+  '武侠',
+  '伦理',
+  '悲剧',
+  '职场',
 ];
 const customGenre = ref('');
 
 const toggleGenre = (g: string) => {
   if (selectedGenres.value.includes(g)) {
-    selectedGenres.value = selectedGenres.value.filter(item => item !== g);
+    selectedGenres.value = selectedGenres.value.filter((item) => item !== g);
   } else {
     selectedGenres.value.push(g);
   }
@@ -92,62 +135,97 @@ const addCustomGenre = () => {
 };
 
 const addCharacter = () => {
-  characters.value.push({ name: '', description: '', gender: '其他', isMain: false });
+  characters.value.push({
+    name: '',
+    description: '',
+    gender: '其他',
+    isMain: false,
+  });
 };
 
 const removeCharacter = (index: number) => {
   characters.value.splice(index, 1);
 };
 
+/**
+ * Expands the synopsis based on the theme using AI.
+ * Requires API key.
+ */
 const handleExpandSynopsis = async () => {
-    const apiKey = glmApiKey.value.trim();
-    const baseUrl = glmBaseUrl.value.trim();
-    const model = glmModel.value.trim();
-    if (!theme.value) {
-        error.value = "请先填写主题";
-        return;
+  const apiKey = glmApiKey.value.trim();
+  const baseUrl = glmBaseUrl.value.trim();
+  const model = glmModel.value.trim();
+  if (!theme.value) {
+    error.value = '请先填写主题';
+    return;
+  }
+  isExpandingSyn.value = true;
+  try {
+    const text = await expandSynopsis(
+      theme.value,
+      synopsis.value,
+      navigator.language,
+      apiKey || undefined,
+      baseUrl || undefined,
+      model || undefined,
+    );
+    synopsis.value = text;
+    // biome-ignore lint/suspicious/noExplicitAny: Error handling
+  } catch (e: any) {
+    if (e instanceof ApiError && e.code === 'API_KEY_REQUIRED') {
+      isSettingsOpen.value = true;
+      apiKeyRequired.value = true;
+      error.value = e.message;
+    } else {
+      error.value = '扩写失败，请重试';
     }
-    isExpandingSyn.value = true;
-    try {
-        const text = await expandSynopsis(theme.value, synopsis.value, navigator.language, apiKey || undefined, baseUrl || undefined, model || undefined);
-        synopsis.value = text;
-    } catch (e: any) {
-        if (e instanceof ApiError && e.code === 'API_KEY_REQUIRED') {
-          isSettingsOpen.value = true;
-          apiKeyRequired.value = true;
-          error.value = e.message;
-        } else {
-          error.value = "扩写失败，请重试";
-        }
-    } finally {
-        isExpandingSyn.value = false;
-    }
+  } finally {
+    isExpandingSyn.value = false;
+  }
 };
 
+/**
+ * Generates characters based on the theme and synopsis using AI.
+ * Requires API key and non-empty synopsis.
+ */
 const handleExpandCharacter = async () => {
-    const apiKey = glmApiKey.value.trim();
-    const baseUrl = glmBaseUrl.value.trim();
-    if (!theme.value || !synopsis.value) {
-        error.value = "请先填写主题和剧情简介";
-        return;
+  const apiKey = glmApiKey.value.trim();
+  const baseUrl = glmBaseUrl.value.trim();
+  const model = glmModel.value.trim();
+  if (!theme.value || !synopsis.value) {
+    error.value = '请先填写主题和剧情简介';
+    return;
+  }
+  isExpandingChar.value = true;
+  try {
+    const newChars = await expandCharacter(
+      theme.value,
+      synopsis.value,
+      characters.value,
+      navigator.language,
+      apiKey || undefined,
+      baseUrl || undefined,
+      model || undefined,
+    );
+    characters.value = newChars;
+    // biome-ignore lint/suspicious/noExplicitAny: Error handling
+  } catch (e: any) {
+    if (e instanceof ApiError && e.code === 'API_KEY_REQUIRED') {
+      isSettingsOpen.value = true;
+      apiKeyRequired.value = true;
+      error.value = e.message;
+    } else {
+      error.value = '角色生成失败';
     }
-    isExpandingChar.value = true;
-    try {
-        const newChars = await expandCharacter(theme.value, synopsis.value, characters.value, navigator.language, apiKey || undefined, baseUrl || undefined);
-        characters.value = newChars;
-    } catch (e: any) {
-        if (e instanceof ApiError && e.code === 'API_KEY_REQUIRED') {
-          isSettingsOpen.value = true;
-          apiKeyRequired.value = true;
-          error.value = e.message;
-        } else {
-          error.value = "角色生成失败";
-        }
-    } finally {
-        isExpandingChar.value = false;
-    }
+  } finally {
+    isExpandingChar.value = false;
+  }
 };
 
+/**
+ * Selects the optimal image size for CogView based on the current viewport aspect ratio.
+ * @returns {'1024x1024' | '864x1152' | '1152x864'} The best matching size string.
+ */
 const selectCogViewSize = (): '1024x1024' | '864x1152' | '1152x864' => {
   const vw = window.visualViewport?.width ?? window.innerWidth;
   const vh = window.visualViewport?.height ?? window.innerHeight;
@@ -179,6 +257,11 @@ const selectCogViewSize = (): '1024x1024' | '864x1152' | '1152x864' => {
   return best.size;
 };
 
+/**
+ * Main function to generate the game.
+ * Calls the API to generate the full game data structure.
+ * Handles loading states and errors.
+ */
 const handleGenerate = async () => {
   const apiKey = glmApiKey.value.trim();
   const baseUrl = glmBaseUrl.value.trim();
@@ -194,7 +277,6 @@ const handleGenerate = async () => {
       synopsis: synopsis.value,
       genre: selectedGenres.value, // Added genres
       characters: characters.value,
-      goal: goal.value,
       freeInput: freeInput.value,
       language: navigator.language,
       size,
@@ -203,6 +285,7 @@ const handleGenerate = async () => {
       model: model || undefined,
     });
     emit('start', data);
+    // biome-ignore lint/suspicious/noExplicitAny: Error handling
   } catch (e: any) {
     if (e instanceof ApiError && e.code === 'API_KEY_REQUIRED') {
       isSettingsOpen.value = true;
@@ -228,7 +311,6 @@ const handleGeneratePrompt = async () => {
       synopsis: synopsis.value,
       genre: selectedGenres.value,
       characters: characters.value,
-      goal: goal.value,
       freeInput: freeInput.value,
       language: navigator.language,
       size,
@@ -238,6 +320,7 @@ const handleGeneratePrompt = async () => {
     });
     promptText.value = text;
     isPromptOpen.value = true;
+    // biome-ignore lint/suspicious/noExplicitAny: Error handling
   } catch (e: any) {
     if (e instanceof ApiError && e.code === 'API_KEY_REQUIRED') {
       isSettingsOpen.value = true;
@@ -280,7 +363,9 @@ const confirmImport = () => {
       return;
     }
     const data = JSON.parse(raw) as MovieTemplate;
+    // biome-ignore lint/suspicious/noExplicitAny: Dynamic data
     const nodes = (data as any)?.nodes;
+    // biome-ignore lint/suspicious/noExplicitAny: Dynamic data
     const endings = (data as any)?.endings;
     if (!nodes || typeof nodes !== 'object') {
       importError.value = 'JSON 缺少 nodes';
@@ -304,10 +389,20 @@ const copyPrompt = async () => {
     error.value = '复制失败';
   }
 };
+
+const btnRef = ref<HTMLButtonElement | null>(null);
+const handleBtnMouseMove = (e: MouseEvent) => {
+  if (!btnRef.value) return;
+  const rect = btnRef.value.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  btnRef.value.style.setProperty('--x', `${x}px`);
+  btnRef.value.style.setProperty('--y', `${y}px`);
+};
 </script>
 
 <template>
-  <div class="relative min-h-screen w-full cursor-auto">
+  <div class="relative h-screen overflow-hidden w-full cursor-auto">
     <FluidCursor />
     <CinematicLoader v-if="isLoading" />
 
@@ -319,7 +414,7 @@ const copyPrompt = async () => {
           <div class="px-5 py-4 flex items-center justify-between border-b border-white/10">
             <div class="text-sm tracking-[0.22em] uppercase text-white/70 font-semibold flex items-center gap-2">
               <Sparkles class="w-4 h-4 text-purple-400" />
-              generate prompt
+              生成提示词
             </div>
             <button @click="isPromptOpen = false" class="p-2 rounded-lg hover:bg-white/5 transition-colors">
               <X class="w-5 h-5 text-white/70" />
@@ -358,8 +453,8 @@ const copyPrompt = async () => {
                 <Sparkles class="w-5 h-5 text-purple-300" />
               </div>
               <div>
-                <h3 class="text-lg font-bold text-white tracking-tight">Design Philosophy</h3>
-                <p class="text-xs text-white/50 uppercase tracking-widest font-semibold">Creating Cinematic Experiences</p>
+                <h3 class="text-lg font-bold text-white tracking-tight">设计理念</h3>
+                <p class="text-xs text-white/50 uppercase tracking-widest font-semibold">打造沉浸式电影体验</p>
               </div>
             </div>
             <button @click="isHelpOpen = false" class="p-2 rounded-full hover:bg-white/10 transition-colors">
@@ -369,9 +464,9 @@ const copyPrompt = async () => {
           
           <div class="p-8 max-h-[70vh] overflow-y-auto space-y-8 custom-scrollbar">
             <div class="space-y-4">
-              <h4 class="text-sm font-bold text-purple-400 uppercase tracking-widest border-b border-purple-500/20 pb-2 mb-4">Core Mechanics</h4>
+              <h4 class="text-sm font-bold text-purple-400 uppercase tracking-widest border-b border-purple-500/20 pb-2 mb-4">核心机制</h4>
               <p class="text-neutral-300 leading-relaxed">
-                <strong class="text-white">Movie Games</strong> transforms your ideas into interactive cinema. By defining a theme, characters, and key plot points, our AI engine constructs a complex narrative tree with branching storylines and multiple endings.
+                <strong class="text-white">Movie Games</strong> 将您的创意转化为互动电影。通过定义主题、角色和关键情节，我们的 AI 引擎将构建一个包含分支剧情和多重结局的复杂叙事树。
               </p>
             </div>
 
@@ -380,9 +475,9 @@ const copyPrompt = async () => {
                 <div class="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center border border-blue-500/20">
                   <Wand2 class="w-5 h-5 text-blue-400" />
                 </div>
-                <h5 class="text-white font-bold">AI Expansion</h5>
+                <h5 class="text-white font-bold">AI 智能扩写</h5>
                 <p class="text-sm text-neutral-400 leading-relaxed">
-                  Use the <span class="text-blue-300">AI 智能扩写</span> button to automatically flesh out your synopsis or generate deep, conflicted characters based on your theme.
+                  使用 <span class="text-blue-300">AI 智能扩写</span> 按钮，根据您的主题自动丰富故事大纲，或生成具有深度和矛盾冲突的角色。
                 </p>
               </div>
 
@@ -390,27 +485,27 @@ const copyPrompt = async () => {
                 <div class="w-10 h-10 rounded-full bg-pink-500/10 flex items-center justify-center border border-pink-500/20">
                   <ImportIcon class="w-5 h-5 text-pink-400" />
                 </div>
-                <h5 class="text-white font-bold">JSON Import</h5>
+                <h5 class="text-white font-bold">JSON 导入</h5>
                 <p class="text-sm text-neutral-400 leading-relaxed">
-                  Already have a script? Import existing <code class="bg-neutral-800 px-1 py-0.5 rounded text-xs text-pink-300">MovieTemplate</code> JSON files to instantly visualize or remake your story.
+                  已有剧本？导入现有的 <code class="bg-neutral-800 px-1 py-0.5 rounded text-xs text-pink-300">MovieTemplate</code> JSON 文件，即可立即可视化或重制您的故事。
                 </p>
               </div>
             </div>
 
             <div class="space-y-4">
-               <h4 class="text-sm font-bold text-purple-400 uppercase tracking-widest border-b border-purple-500/20 pb-2 mb-4">Tips for Best Results</h4>
+               <h4 class="text-sm font-bold text-purple-400 uppercase tracking-widest border-b border-purple-500/20 pb-2 mb-4">最佳效果技巧</h4>
                <ul class="space-y-3 text-neutral-300 text-sm">
                  <li class="flex gap-3">
                    <span class="w-1.5 h-1.5 rounded-full bg-purple-500 mt-2 flex-shrink-0"></span>
-                   <span>Provide a detailed <strong>Synopsis</strong>. The more context you give, the more coherent the generated plot will be.</span>
+                   <span>提供详细的<strong>故事大纲</strong>。您提供的上下文越多，生成的剧情就越连贯。</span>
                  </li>
                  <li class="flex gap-3">
                    <span class="w-1.5 h-1.5 rounded-full bg-purple-500 mt-2 flex-shrink-0"></span>
-                   <span>Create at least <strong>3 Characters</strong> for rich interactions. Define their "Deep Needs" in the description.</span>
+                   <span>创建至少 <strong>3 个角色</strong>以获得丰富的人物互动。在描述中定义他们的“深层需求”。</span>
                  </li>
                  <li class="flex gap-3">
                    <span class="w-1.5 h-1.5 rounded-full bg-purple-500 mt-2 flex-shrink-0"></span>
-                   <span>Use the <strong>Generate Prompt Only</strong> feature if you want to inspect or manually tweak the prompt before sending it to the AI.</span>
+                   <span>如果您想在发送给 AI 之前检查或手动调整提示词，请使用<strong>仅生成提示词</strong>功能。</span>
                  </li>
                </ul>
             </div>
@@ -418,7 +513,7 @@ const copyPrompt = async () => {
 
           <div class="px-6 py-4 bg-black/20 border-t border-white/5 flex justify-end">
             <button @click="isHelpOpen = false" class="px-6 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium transition-colors">
-              Got it
+              知道了
             </button>
           </div>
         </div>
@@ -433,7 +528,7 @@ const copyPrompt = async () => {
           <div class="px-5 py-4 flex items-center justify-between border-b border-white/10">
             <div class="text-sm tracking-[0.22em] uppercase text-white/70 font-semibold flex items-center gap-2">
               <ImportIcon class="w-4 h-4 text-cyan-400" />
-              import game json
+              导入游戏数据
             </div>
             <button @click="isImportOpen = false" class="p-2 rounded-lg hover:bg-white/5 transition-colors">
               <X class="w-5 h-5 text-white/70" />
@@ -585,9 +680,9 @@ const copyPrompt = async () => {
       speed="fast"
     />
 
-    <div class="container mx-auto px-4 py-8 max-w-4xl animate-fade-in text-neutral-100 relative z-10">
+    <div class="container mx-auto h-full max-w-4xl animate-fade-in text-neutral-100 relative z-10 flex flex-col px-4 py-8">
         <!-- Header -->
-        <header class="mb-12 relative">
+        <header class="mb-6 md:mb-12 relative flex-shrink-0">
             <div class="absolute top-0 right-0 flex items-center gap-3">
                 <button
                     @click="isHelpOpen = true"
@@ -620,33 +715,17 @@ const copyPrompt = async () => {
             </div>
         </header>
 
-        <!-- Tabs -->
-        <div class="flex justify-center mb-10 gap-6">
-        <button 
-            @click="mode = 'wizard'"
-            :class="['px-8 py-3 rounded-full transition-all duration-300 font-bold tracking-wide border', mode === 'wizard' ? 'bg-purple-600 border-purple-500 text-white shadow-[0_0_20px_rgba(147,51,234,0.5)] scale-105' : 'bg-neutral-900/80 border-neutral-800 text-neutral-500 hover:text-white hover:bg-neutral-800 backdrop-blur-sm']"
-        >
-            🧙‍♂️ 向导模式
-        </button>
-        <button 
-            @click="mode = 'free'"
-            :class="['px-8 py-3 rounded-full transition-all duration-300 font-bold tracking-wide border', mode === 'free' ? 'bg-purple-600 border-purple-500 text-white shadow-[0_0_20px_rgba(147,51,234,0.5)] scale-105' : 'bg-neutral-900/80 border-neutral-800 text-neutral-500 hover:text-white hover:bg-neutral-800 backdrop-blur-sm']"
-        >
-            ✍️ 自由输入
-        </button>
-        </div>
-
         <!-- Main Card with Glow Effect -->
-        <div class="relative group">
+        <div class="relative group flex-shrink min-h-0 flex flex-col justify-center max-h-full">
             <!-- Glow Border -->
             <div class="absolute -inset-0.5 bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 rounded-2xl blur opacity-30 group-hover:opacity-70 transition duration-1000 group-hover:duration-200 animate-tilt"></div>
             
-            <div class="relative bg-black/80 backdrop-blur-xl border border-neutral-800 rounded-2xl p-8 md:p-12 shadow-2xl overflow-hidden">
+            <div class="relative bg-black/80 backdrop-blur-xl border border-neutral-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-full md:h-auto md:max-h-[80vh]">
                 <!-- Inner Decoration -->
-                <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-white/10 to-transparent"></div>
+                <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-white/10 to-transparent z-10"></div>
 
-            <!-- Wizard Mode -->
-            <div v-if="mode === 'wizard'" class="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <!-- Wizard Mode Content -->
+            <div class="p-8 md:p-12 overflow-y-auto flex-1 no-scrollbar space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <!-- Theme -->
                 <div class="space-y-3">
                 <label class="text-lg font-bold text-neutral-300 uppercase tracking-wider flex items-center gap-2">
@@ -690,20 +769,31 @@ const copyPrompt = async () => {
                         <span class="w-1.5 h-1.5 rounded-full bg-cyan-500"></span>
                         剧情简介
                     </label>
-                    <button @click="handleExpandSynopsis" :disabled="isExpandingSyn" class="relative inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-purple-500/50 bg-purple-500/10 backdrop-blur-md text-xs font-bold text-purple-200 hover:text-white hover:bg-purple-500/20 hover:border-purple-400 transition-all disabled:opacity-50 overflow-hidden group shadow-[0_0_15px_rgba(168,85,247,0.15)] hover:shadow-[0_0_25px_rgba(168,85,247,0.3)]">
+                    <button @click="handleExpandSynopsis" :disabled="isExpandingSyn" class="relative inline-flex items-center gap-2 px-6 py-2.5 rounded-full border border-purple-500/50 bg-purple-500/10 backdrop-blur-md text-sm font-bold text-purple-200 hover:text-white hover:bg-purple-500/20 hover:border-purple-400 transition-all disabled:opacity-50 overflow-hidden group shadow-[0_0_15px_rgba(168,85,247,0.15)] hover:shadow-[0_0_25px_rgba(168,85,247,0.3)]">
                         <span class="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:animate-shimmer"></span>
-                        <span class="relative inline-flex items-center gap-1.5">
+                        <span class="relative inline-flex items-center gap-2">
                           <span v-if="isExpandingSyn" class="inline-flex items-center gap-1">
-                            <span class="w-1 h-1 rounded-full bg-purple-300 animate-pulse"></span>
-                            <span class="w-1 h-1 rounded-full bg-pink-300 animate-pulse" :style="{ animationDelay: '120ms' }"></span>
-                            <span class="w-1 h-1 rounded-full bg-cyan-200 animate-pulse" :style="{ animationDelay: '240ms' }"></span>
+                            <span class="w-1.5 h-1.5 rounded-full bg-purple-300 animate-pulse"></span>
+                            <span class="w-1.5 h-1.5 rounded-full bg-pink-300 animate-pulse" :style="{ animationDelay: '120ms' }"></span>
+                            <span class="w-1.5 h-1.5 rounded-full bg-cyan-200 animate-pulse" :style="{ animationDelay: '240ms' }"></span>
                           </span>
-                          <Wand2 v-else class="w-3.5 h-3.5 text-purple-400 group-hover:text-white transition-colors" />
+                          <Wand2 v-else class="w-4 h-4 text-purple-400 group-hover:text-white transition-colors" />
                           <span class="tracking-wide uppercase">AI 智能扩写</span>
                         </span>
                     </button>
                 </div>
-                <textarea v-model="synopsis" rows="6" class="w-full bg-neutral-900/50 border border-neutral-700 rounded-xl px-5 py-4 text-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none text-white placeholder-neutral-600 transition-all resize-none leading-relaxed" placeholder="描述故事的核心冲突、世界背景和开场氛围..."></textarea>
+                <div class="relative">
+                    <textarea 
+                        v-model="synopsis" 
+                        :disabled="isExpandingSyn"
+                        rows="6" 
+                        :class="['w-full bg-neutral-900/50 border rounded-xl px-5 py-4 text-lg outline-none text-white placeholder-neutral-600 transition-all resize-none leading-relaxed', isExpandingSyn ? 'border-purple-500/50 animate-pulse bg-purple-900/10' : 'border-neutral-700 focus:ring-2 focus:ring-purple-500 focus:border-transparent']"
+                        placeholder="描述故事的核心冲突、世界背景和开场氛围..."
+                    ></textarea>
+                    <div v-if="isExpandingSyn" class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <span class="bg-black/50 backdrop-blur px-4 py-2 rounded-lg text-purple-300 text-sm font-bold animate-pulse">AI 正在扩写中...</span>
+                    </div>
+                </div>
                 </div>
 
                 <!-- Characters -->
@@ -714,83 +804,81 @@ const copyPrompt = async () => {
                         角色阵容
                     </label>
                     <div class="flex gap-3">
-                        <button @click="handleExpandCharacter" :disabled="isExpandingChar" class="relative inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-purple-500/30 bg-purple-900/20 backdrop-blur-md text-xs font-semibold text-purple-200 hover:text-white hover:bg-purple-900/40 hover:border-purple-500/60 transition-all disabled:opacity-50 overflow-hidden group">
+                        <button @click="handleExpandCharacter" :disabled="isExpandingChar" class="relative inline-flex items-center gap-2 px-6 py-2.5 rounded-full border border-purple-500/30 bg-purple-900/20 backdrop-blur-md text-sm font-semibold text-purple-200 hover:text-white hover:bg-purple-900/40 hover:border-purple-500/60 transition-all disabled:opacity-50 overflow-hidden group">
                             <span class="absolute inset-0 bg-gradient-to-r from-purple-500/10 via-pink-500/10 to-cyan-400/10 opacity-0 group-hover:opacity-100 transition-opacity"></span>
-                            <span class="relative inline-flex items-center gap-1.5">
+                            <span class="relative inline-flex items-center gap-2">
                               <span v-if="isExpandingChar" class="inline-flex items-center gap-1">
-                                <span class="w-1 h-1 rounded-full bg-purple-300 animate-pulse"></span>
-                                <span class="w-1 h-1 rounded-full bg-pink-300 animate-pulse" :style="{ animationDelay: '120ms' }"></span>
-                                <span class="w-1 h-1 rounded-full bg-cyan-200 animate-pulse" :style="{ animationDelay: '240ms' }"></span>
+                                <span class="w-1.5 h-1.5 rounded-full bg-purple-300 animate-pulse"></span>
+                                <span class="w-1.5 h-1.5 rounded-full bg-pink-300 animate-pulse" :style="{ animationDelay: '120ms' }"></span>
+                                <span class="w-1.5 h-1.5 rounded-full bg-cyan-200 animate-pulse" :style="{ animationDelay: '240ms' }"></span>
                               </span>
-                              <Sparkles v-else class="w-3 h-3" />
+                              <Sparkles v-else class="w-4 h-4" />
                               <span class="tracking-wide uppercase">AI 生成角色</span>
                             </span>
                         </button>
-                        <button @click="addCharacter" class="relative inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-white/10 bg-black/30 backdrop-blur-md text-xs font-semibold text-white/70 hover:text-white hover:border-white/30 transition-all overflow-hidden">
+                        <button @click="addCharacter" class="relative inline-flex items-center gap-2 px-6 py-2.5 rounded-full border border-white/10 bg-black/30 backdrop-blur-md text-sm font-semibold text-white/70 hover:text-white hover:border-white/30 transition-all overflow-hidden">
                           <span class="tracking-wide">+ 添加角色</span>
                         </button>
                     </div>
                 </div>
-                <div class="grid gap-4">
-                    <div v-for="(char, idx) in characters" :key="idx" class="bg-neutral-900/50 p-5 rounded-xl border border-neutral-800 flex flex-wrap md:flex-nowrap gap-4 items-center group/item hover:border-purple-500/30 transition-all">
-                        <input v-model="char.name" placeholder="名字" class="w-full md:w-1/4 bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-base text-white focus:border-purple-500 outline-none transition-colors">
-                        <input v-model="char.description" placeholder="身份与性格描述" class="w-full md:flex-1 bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-base text-white focus:border-purple-500 outline-none transition-colors">
-                        <select v-model="char.gender" class="w-full md:w-28 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-3 text-base text-neutral-400 focus:border-purple-500 outline-none transition-colors">
-                            <option>Male</option>
-                            <option>Female</option>
-                            <option>Other</option>
-                        </select>
-                        <label class="flex-shrink-0 flex items-center justify-center gap-2 text-sm text-neutral-400 cursor-pointer select-none bg-neutral-950 rounded-lg border border-neutral-800 hover:bg-neutral-900 transition-colors px-4 py-3 whitespace-nowrap">
-                            <input type="checkbox" v-model="char.isMain" class="accent-purple-500 w-4 h-4"> 主角
-                        </label>
-                        <button @click="removeCharacter(idx)" class="text-neutral-600 hover:text-red-500 p-2 transition-colors text-xl flex-shrink-0">×</button>
+                <div class="relative">
+                    <div :class="['grid gap-4', isExpandingChar ? 'opacity-50 pointer-events-none blur-sm' : '']">
+                        <div v-for="(char, idx) in characters" :key="idx" class="bg-neutral-900/50 p-5 rounded-xl border border-neutral-800 flex flex-col gap-4 relative group/item hover:border-purple-500/30 transition-all">
+                            <div class="flex flex-wrap md:flex-nowrap gap-4 items-center w-full">
+                                <input v-model="char.name" placeholder="名字" class="w-full md:w-1/4 bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-base text-white focus:border-purple-500 outline-none transition-colors">
+                                <input v-model="char.gender" placeholder="性别" class="w-full md:w-28 bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-base text-white focus:border-purple-500 outline-none transition-colors">
+                                <label class="flex-shrink-0 flex items-center justify-center gap-2 text-sm text-neutral-400 cursor-pointer select-none bg-neutral-950 rounded-lg border border-neutral-800 hover:bg-neutral-900 transition-colors px-4 py-3 whitespace-nowrap">
+                                    <input type="checkbox" v-model="char.isMain" class="accent-purple-500 w-4 h-4"> 主角
+                                </label>
+                                <div class="flex-1"></div>
+                                <button @click="removeCharacter(idx)" class="text-neutral-600 hover:text-red-500 p-2 transition-colors text-xl flex-shrink-0">×</button>
+                            </div>
+                            <textarea v-model="char.description" placeholder="身份与性格描述" rows="2" class="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-base text-white focus:border-purple-500 outline-none transition-colors resize-none custom-scrollbar"></textarea>
+                        </div>
+                    </div>
+                    <div v-if="isExpandingChar" class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <span class="bg-black/50 backdrop-blur px-6 py-3 rounded-xl text-purple-300 text-lg font-bold animate-pulse border border-purple-500/30">AI 正在生成角色...</span>
                     </div>
                 </div>
                 </div>
 
-                <!-- Goal -->
-                <div class="space-y-3">
-                <label class="text-lg font-bold text-neutral-300 uppercase tracking-wider flex items-center gap-2">
-                    <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
-                    终极目标
-                </label>
-                <input v-model="goal" type="text" class="w-full bg-neutral-900/50 border border-neutral-700 rounded-xl px-5 py-4 text-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none text-white placeholder-neutral-600 transition-all" placeholder="玩家需要达成什么成就？例如：找出真凶、逃离地球...">
-                </div>
-            </div>
-
-            <!-- Free Mode -->
-            <div v-else class="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div class="space-y-2">
-                <label class="text-lg font-bold text-neutral-400 uppercase tracking-wider">自由描述</label>
-                <textarea v-model="freeInput" rows="12" class="w-full bg-neutral-900/50 border border-neutral-700 rounded-xl px-5 py-4 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none text-white placeholder-neutral-600 transition-all leading-relaxed" placeholder="在这里尽情挥洒你的创意，描述你想玩的游戏的一切细节..."></textarea>
-                </div>
-                
-                <!-- Genre Selection for Free Mode too -->
-                <div class="space-y-3">
-                    <label class="text-lg font-bold text-neutral-400 uppercase tracking-wider">剧情类型 (多选)</label>
-                    <div class="flex flex-wrap gap-2">
-                        <button 
-                            v-for="g in availableGenres" 
-                            :key="g"
-                            @click="toggleGenre(g)"
-                            :class="['px-3 py-1.5 rounded-lg text-sm transition-all border', selectedGenres.includes(g) ? 'bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-900/50' : 'bg-neutral-900 border-neutral-700 text-neutral-400 hover:border-purple-500/50']"
-                        >
-                            {{ g }}
-                        </button>
-                    </div>
-                </div>
             </div>
 
             <!-- Action -->
-            <div class="mt-12">
-                <div v-if="error" class="bg-red-500/10 border border-red-500/20 text-red-500 p-4 rounded-xl text-sm text-center mb-6 animate-pulse">{{ error }}</div>
+            <div class="z-20 bg-black/90 backdrop-blur-xl border-t border-white/10 p-6 shadow-[0_-10px_40px_rgba(0,0,0,0.5)] flex-shrink-0 relative">
+                <!-- Error Modal (Replaces inline error) -->
+                <Transition enter-active-class="animate-in fade-in duration-200" leave-active-class="animate-out fade-out duration-150">
+                    <div v-if="error" class="absolute left-0 right-0 bottom-full mb-4 px-6 flex justify-center pointer-events-none">
+                        <div class="w-full max-w-md bg-neutral-900 border border-red-500/30 rounded-2xl p-4 shadow-2xl pointer-events-auto flex items-center gap-4">
+                                <div class="w-10 h-10 rounded-full bg-red-500/10 flex-shrink-0 flex items-center justify-center">
+                                    <AlertCircle class="w-5 h-5 text-red-500" />
+                                </div>
+                                <div class="flex-1 min-w-0">
+                                  <h3 class="text-sm font-bold text-white">出错啦</h3>
+                                  <p class="text-xs text-neutral-300 truncate">{{ error }}</p>
+                                </div>
+                                <button 
+                                    @click="error = ''" 
+                                    class="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-bold transition-colors border border-red-500/20 whitespace-nowrap"
+                                >
+                                    知道了
+                                </button>
+                        </div>
+                    </div>
+                </Transition>
                 
                 <button 
+                    ref="btnRef"
+                    @mousemove="handleBtnMouseMove"
                     @click="handleGenerate" 
-                    :disabled="isLoading"
-                    class="w-full py-5 rounded-xl bg-gradient-to-r from-purple-600 via-pink-600 to-purple-600 bg-[length:200%_auto] animate-gradient text-white font-black text-xl hover:shadow-[0_0_30px_rgba(168,85,247,0.4)] hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 flex justify-center items-center gap-3 relative overflow-hidden group"
+                    :disabled="isLoading || isExpandingSyn || isExpandingChar"
+                    class="w-full py-5 rounded-xl bg-neutral-900 border border-white/10 text-white font-black text-xl hover:shadow-[0_0_30px_rgba(168,85,247,0.4)] hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 flex justify-center items-center gap-3 relative overflow-hidden group"
                 >
-                    <div class="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-500"></div>
+                    <!-- Spotlight Effect -->
+                    <div class="pointer-events-none absolute -inset-px opacity-0 transition duration-300 group-hover:opacity-100" style="background: radial-gradient(600px circle at var(--x) var(--y), rgba(168, 85, 247, 0.4), transparent 40%);"></div>
+                    <!-- Background Gradient (Subtle) -->
+                     <div class="absolute inset-0 bg-gradient-to-r from-purple-900/50 via-pink-900/50 to-purple-900/50 opacity-50"></div>
+
                     <svg v-if="isLoading" viewBox="0 0 24 24" fill="none" class="w-6 h-6 text-white/95 animate-spin relative z-10">
                       <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" class="opacity-20"/>
                       <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
@@ -798,20 +886,20 @@ const copyPrompt = async () => {
                     <span class="relative z-10">{{ isLoading ? '正在生成剧本...' : '🚀 开始生成剧情' }}</span>
                 </button>
 
-                <div class="mt-6 flex justify-center">
+                <div class="mt-4 flex justify-center">
                   <button
                     @click="handleGeneratePrompt"
                     :disabled="isPromptLoading"
-                    class="relative inline-flex items-center gap-2 px-6 py-2.5 rounded-full border border-white/10 bg-white/5 backdrop-blur-md text-xs font-bold text-white/70 hover:text-white hover:border-white/30 hover:bg-white/10 transition-all disabled:opacity-30 group overflow-hidden"
+                    class="relative inline-flex items-center gap-2 px-6 py-2 rounded-full border border-white/10 bg-white/5 backdrop-blur-md text-xs font-bold text-white/50 hover:text-white hover:border-white/30 hover:bg-white/10 transition-all disabled:opacity-30 group overflow-hidden"
                   >
                     <span class="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent -translate-x-full group-hover:animate-shimmer"></span>
                     <span v-if="isPromptLoading" class="inline-flex items-center gap-1">
-                        <span class="w-1 h-1 rounded-full bg-white/50 animate-pulse"></span>
-                        <span class="w-1 h-1 rounded-full bg-white/50 animate-pulse" :style="{ animationDelay: '120ms' }"></span>
-                        <span class="w-1 h-1 rounded-full bg-white/50 animate-pulse" :style="{ animationDelay: '240ms' }"></span>
+                        <span class="w-1.5 h-1.5 rounded-full bg-white/50 animate-pulse"></span>
+                        <span class="w-1.5 h-1.5 rounded-full bg-white/50 animate-pulse" :style="{ animationDelay: '120ms' }"></span>
+                        <span class="w-1.5 h-1.5 rounded-full bg-white/50 animate-pulse" :style="{ animationDelay: '240ms' }"></span>
                     </span>
-                    <Sparkles v-else class="w-3.5 h-3.5 text-purple-400 group-hover:text-purple-300 transition-colors" />
-                    <span class="tracking-widest uppercase">Generate Prompt Only</span>
+                    <Sparkles v-else class="w-3 h-3 text-purple-400 group-hover:text-purple-300 transition-colors" />
+                    <span class="tracking-widest uppercase">仅生成提示词</span>
                   </button>
                 </div>
             </div>

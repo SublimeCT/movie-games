@@ -1,1 +1,1 @@
-export { default as FluidCursor } from "./FluidCursor.vue";
+export { default as FluidCursor } from './FluidCursor.vue';

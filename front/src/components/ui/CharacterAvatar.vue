@@ -13,7 +13,7 @@ const props = defineProps<{
 const hash = (str: string) => {
   let h = 0;
   for (let i = 0; i < str.length; i++) {
-    h = Math.imul(31, h) + str.charCodeAt(i) | 0;
+    h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
   }
   return h;
 };
@@ -22,13 +22,20 @@ const seed = computed(() => hash(props.name || 'default'));
 
 // Colors
 const skinTone = computed(() => {
-    const tones = ['#f5d0b0', '#eac096', '#e0ac69', '#8d5524', '#c68642'];
-    return tones[Math.abs(seed.value) % tones.length];
+  const tones = ['#f5d0b0', '#eac096', '#e0ac69', '#8d5524', '#c68642'];
+  return tones[Math.abs(seed.value) % tones.length];
 });
 
 const hairColor = computed(() => {
-    const colors = ['#090806', '#2c222b', '#71635a', '#b7a69e', '#d6c4c2', '#b55239'];
-    return colors[Math.abs(seed.value) % colors.length];
+  const colors = [
+    '#090806',
+    '#2c222b',
+    '#71635a',
+    '#b7a69e',
+    '#d6c4c2',
+    '#b55239',
+  ];
+  return colors[Math.abs(seed.value) % colors.length];
 });
 
 // Features based on gender
@@ -36,28 +43,29 @@ const isFemale = computed(() => props.gender?.toLowerCase() === 'female');
 
 // Mouth path based on emotion
 const mouthPath = computed(() => {
-    const e = props.emotion?.toLowerCase() || 'neutral';
-    if (e.includes('happy') || e.includes('joy')) return "M 35 75 Q 50 85 65 75"; // Smile
-    if (e.includes('sad') || e.includes('grief')) return "M 35 80 Q 50 70 65 80"; // Frown
-    if (e.includes('angry')) return "M 40 80 L 60 80"; // Straight line
-    if (e.includes('surprised') || e.includes('shock')) return "M 45 75 A 5 5 0 1 0 55 75 A 5 5 0 1 0 45 75"; // Open O
-    return "M 38 78 Q 50 82 62 78"; // Neutral
+  const e = props.emotion?.toLowerCase() || 'neutral';
+  if (e.includes('happy') || e.includes('joy')) return 'M 35 75 Q 50 85 65 75'; // Smile
+  if (e.includes('sad') || e.includes('grief')) return 'M 35 80 Q 50 70 65 80'; // Frown
+  if (e.includes('angry')) return 'M 40 80 L 60 80'; // Straight line
+  if (e.includes('surprised') || e.includes('shock'))
+    return 'M 45 75 A 5 5 0 1 0 55 75 A 5 5 0 1 0 45 75'; // Open O
+  return 'M 38 78 Q 50 82 62 78'; // Neutral
 });
 
 // Eyebrow path
 const eyebrowPath = computed(() => {
-    const e = props.emotion?.toLowerCase() || 'neutral';
-    if (e.includes('angry')) return ["M 25 45 L 40 50", "M 75 45 L 60 50"];
-    if (e.includes('sad')) return ["M 25 45 L 40 40", "M 75 45 L 60 40"];
-    if (e.includes('surprised')) return ["M 25 35 Q 32 30 40 35", "M 60 35 Q 68 30 75 35"];
-    return ["M 25 42 Q 32 40 40 42", "M 60 42 Q 68 40 75 42"];
+  const e = props.emotion?.toLowerCase() || 'neutral';
+  if (e.includes('angry')) return ['M 25 45 L 40 50', 'M 75 45 L 60 50'];
+  if (e.includes('sad')) return ['M 25 45 L 40 40', 'M 75 45 L 60 40'];
+  if (e.includes('surprised'))
+    return ['M 25 35 Q 32 30 40 35', 'M 60 35 Q 68 30 75 35'];
+  return ['M 25 42 Q 32 40 40 42', 'M 60 42 Q 68 40 75 42'];
 });
 
 const imageSrc = computed(() => {
   const v = (props.avatarPath || '').trim();
   return v ? v : undefined;
 });
-
 </script>
 
 <template>

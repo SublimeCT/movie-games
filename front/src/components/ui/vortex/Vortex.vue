@@ -1,6 +1,6 @@
 <script setup lang="ts">
- import { onMounted, onUnmounted, ref } from "vue";
-import { createNoise3D } from "simplex-noise";
+import { createNoise3D } from 'simplex-noise';
+import { onMounted, onUnmounted, ref } from 'vue';
 
 interface Props {
   particleCount?: number;
@@ -22,8 +22,8 @@ const props = withDefaults(defineProps<Props>(), {
   rangeSpeed: 1.5,
   baseRadius: 1,
   rangeRadius: 2,
-  backgroundColor: "#000000",
-  containerClass: "",
+  backgroundColor: '#000000',
+  containerClass: '',
 });
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
@@ -56,7 +56,7 @@ class Particle {
     this.speed = props.baseSpeed + Math.random() * props.rangeSpeed;
     this.radius = props.baseRadius + Math.random() * props.rangeRadius;
     this.hue = props.baseHue + Math.random() * 30;
-    
+
     // Vortex specific initialization
     const dx = this.x - width / 2;
     const dy = this.y - height / 2;
@@ -67,14 +67,14 @@ class Particle {
   update(width: number, height: number, time: number) {
     const centerX = width / 2;
     const centerY = height / 2;
-    
+
     // Spiral movement
     this.angle += 0.005 * this.speed;
     this.distance -= 0.5 * this.speed;
-    
+
     // Add some noise
     const noise = noise3D(this.x / 200, this.y / 200, time * 0.0002) * 20;
-    
+
     this.x = centerX + Math.cos(this.angle) * (this.distance + noise);
     this.y = centerY + Math.sin(this.angle) * (this.distance + noise);
 
@@ -92,12 +92,12 @@ class Particle {
     // Spawn at edges or random
     const angle = Math.random() * Math.PI * 2;
     const distance = Math.max(width, height) * 0.5 + Math.random() * 100; // Spawn closer
-    
+
     this.angle = angle;
     this.distance = distance;
     this.x = centerX + Math.cos(angle) * distance;
     this.y = centerY + Math.sin(angle) * distance;
-    
+
     this.life = 0;
     this.ttl = Math.random() * 200 + 300; // Consistent long TTL
     this.hue = props.baseHue + Math.random() * 30;
@@ -121,14 +121,14 @@ const initParticles = (width: number, height: number) => {
 
 const render = () => {
   if (!canvasRef.value) return;
-  const ctx = canvasRef.value.getContext("2d");
+  const ctx = canvasRef.value.getContext('2d');
   if (!ctx) return;
 
   const width = canvasRef.value.width;
   const height = canvasRef.value.height;
 
   // Trail effect
-  ctx.fillStyle = `rgba(0, 0, 0, 0.1)`; 
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
   ctx.fillRect(0, 0, width, height);
 
   tick++;
@@ -151,12 +151,12 @@ const handleResize = () => {
 
 onMounted(() => {
   handleResize();
-  window.addEventListener("resize", handleResize);
+  window.addEventListener('resize', handleResize);
   render();
 });
 
 onUnmounted(() => {
-  window.removeEventListener("resize", handleResize);
+  window.removeEventListener('resize', handleResize);
   cancelAnimationFrame(animationFrameId);
 });
 </script>

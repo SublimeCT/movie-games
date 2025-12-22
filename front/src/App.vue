@@ -1,30 +1,40 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
 import { useStorage } from '@vueuse/core';
+import { onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import type { MovieTemplate, Ending } from './types/movie';
+import type { Ending, MovieTemplate } from './types/movie';
 
 const router = useRouter();
 
 // Persist the active game data with custom serializer to prevent [object Object] corruption
-const gameData = useStorage<MovieTemplate | null>('mg_active_game_data', null, localStorage, {
-  serializer: {
-    read: (v: any) => {
-      if (!v || v === 'null' || v === 'undefined' || v === '[object Object]') return null;
-      try {
-        return JSON.parse(v);
-      } catch (e) {
-        console.warn('Failed to parse game data, resetting:', e);
-        return null;
-      }
+const gameData = useStorage<MovieTemplate | null>(
+  'mg_active_game_data',
+  null,
+  localStorage,
+  {
+    serializer: {
+      // biome-ignore lint/suspicious/noExplicitAny: Serializer needs flexibility
+      read: (v: any) => {
+        if (!v || v === 'null' || v === 'undefined' || v === '[object Object]')
+          return null;
+        try {
+          return JSON.parse(v);
+        } catch (e) {
+          console.warn('Failed to parse game data, resetting:', e);
+          return null;
+        }
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: Serializer needs flexibility
+      write: (v: any) => JSON.stringify(v),
     },
-    write: (v: any) => JSON.stringify(v),
   },
-});
+);
 const endingData = useStorage<Ending | null>('mg_ending', null, localStorage, {
   serializer: {
+    // biome-ignore lint/suspicious/noExplicitAny: Serializer needs flexibility
     read: (v: any) => {
-      if (!v || v === 'null' || v === 'undefined' || v === '[object Object]') return null;
+      if (!v || v === 'null' || v === 'undefined' || v === '[object Object]')
+        return null;
       try {
         return JSON.parse(v);
       } catch (e) {
@@ -32,6 +42,7 @@ const endingData = useStorage<Ending | null>('mg_ending', null, localStorage, {
         return null;
       }
     },
+    // biome-ignore lint/suspicious/noExplicitAny: Serializer needs flexibility
     write: (v: any) => JSON.stringify(v),
   },
 });
@@ -39,13 +50,13 @@ const endingData = useStorage<Ending | null>('mg_ending', null, localStorage, {
 // Check for corrupted storage
 onMounted(() => {
   // Double check in case the serializer didn't catch it initially (unlikely with custom serializer but safe)
-  // @ts-ignore
+  // @ts-expect-error
   if (gameData.value === '[object Object]') {
     console.warn('Fixing corrupted game data storage (manual check)');
     gameData.value = null;
   }
 
-  // @ts-ignore
+  // @ts-expect-error
   if (endingData.value === '[object Object]') {
     console.warn('Fixing corrupted ending data storage (manual check)');
     endingData.value = null;
@@ -56,7 +67,7 @@ const handleGameStart = (data: MovieTemplate) => {
   // Ensure fresh start for new game
   localStorage.removeItem('mg_current_node');
   localStorage.removeItem('mg_player_state');
-  
+
   gameData.value = data;
   router.push('/game');
 };

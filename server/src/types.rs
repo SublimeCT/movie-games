@@ -125,20 +125,15 @@ pub struct Character {
 #[serde(rename_all = "camelCase")]
 pub struct StoryNode {
     pub id: String, // Renamed from node_id
-    pub content: NodeContent,
+    pub content: String,
     #[serde(default)]
     pub ending_key: Option<String>,
+    #[serde(default)]
+    pub level: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_option_vec_or_string")]
     pub characters: Option<Vec<String>>,
     #[serde(default)]
     pub choices: Vec<Choice>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeContent {
-    pub text: String,
-    pub notes: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -8,7 +8,6 @@ pub(crate) struct GenerateRequest {
     pub(crate) synopsis: Option<String>,
     pub(crate) genre: Option<Vec<String>>,
     pub(crate) characters: Option<Vec<CharacterInput>>,
-    pub(crate) goal: Option<String>,
     #[serde(default)]
     pub(crate) min_nodes: Option<u32>,
     #[serde(default)]

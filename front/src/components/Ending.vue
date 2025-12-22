@@ -1,22 +1,24 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { X } from 'lucide-vue-next';
 import type { Ending, MovieTemplate, StoryNode } from '../types/movie';
 
 const props = defineProps<{
-  data?: MovieTemplate | null
-  ending?: Ending | null
+  data?: MovieTemplate | null;
+  ending?: Ending | null;
 }>();
 
 const emit = defineEmits<{
-  (e: 'restartPlay'): void
-  (e: 'remake'): void
+  (e: 'restartPlay'): void;
+  (e: 'remake'): void;
 }>();
 
-const resolvedEnding = computed<Ending>(() =>
-  props.ending ?? {
-    type: 'neutral',
-    description: 'Game Over',
-  },
+const resolvedEnding = computed<Ending>(
+  () =>
+    props.ending ?? {
+      type: 'neutral',
+      description: 'Game Over',
+    },
 );
 
 const endingTitle = computed(() => {
@@ -100,8 +102,11 @@ const setupBackground = () => {
       const y = (o.y + Math.cos(t * o.s * 0.9 + o.p) * 0.12) * h;
       const r = o.r * Math.min(w, h) * (0.9 + 0.2 * Math.sin(t * 0.6 + o.p));
       const rg = ctx.createRadialGradient(x, y, 0, x, y, r);
-      rg.addColorStop(0, `hsla(${hue + (o.p * 40) % 80}, 98%, 62%, 0.34)`);
-      rg.addColorStop(0.55, `hsla(${hue2 + (o.p * 50) % 90}, 98%, 58%, 0.12)`);
+      rg.addColorStop(0, `hsla(${hue + ((o.p * 40) % 80)}, 98%, 62%, 0.34)`);
+      rg.addColorStop(
+        0.55,
+        `hsla(${hue2 + ((o.p * 50) % 90)}, 98%, 58%, 0.12)`,
+      );
       rg.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = rg;
       ctx.beginPath();
@@ -145,6 +150,8 @@ type TreeNodeVM = {
   depth: number;
   x: number;
   y: number;
+  w: number;
+  h: number;
 };
 
 type EdgeVM = {
@@ -170,7 +177,11 @@ const treeGraph = computed(() => {
   const endings = props.data?.endings ?? {};
   const root = startNodeId.value;
   if (!root || !nodes[root]) {
-    return { nodes: [] as TreeNodeVM[], edges: [] as EdgeVM[], view: { w: 1000, h: 700 } };
+    return {
+      nodes: [] as TreeNodeVM[],
+      edges: [] as EdgeVM[],
+      view: { w: 1000, h: 700 },
+    };
   }
 
   const knownEndingKeys = new Set(Object.keys(endings));
@@ -188,7 +199,7 @@ const treeGraph = computed(() => {
       if (!to) continue;
       if (seenTargets.has(to)) continue;
       seenTargets.add(to);
-      
+
       if (nodes[to]) list.push({ to, label: c.text });
       else if (knownEndingKeys.has(to)) list.push({ to, label: c.text });
     }
@@ -223,30 +234,86 @@ const treeGraph = computed(() => {
   for (const id of visited) {
     const d = depth.get(id) ?? 0;
     if (!byDepth.has(d)) byDepth.set(d, []);
-    byDepth.get(d)!.push(id);
+    byDepth.get(d)?.push(id);
   }
 
   const maxDepth = Math.max(...Array.from(byDepth.keys()));
-  for (const ids of byDepth.values()) {
-    ids.sort((a, b) => a.localeCompare(b));
+
+  // 优化排序：确保子节点尽量靠近父节点
+  const layers: string[][] = [];
+  for (let i = 0; i <= maxDepth; i++) layers.push([]);
+  
+  const placed = new Set<string>();
+  
+  // Layer 0
+  const rootLayer = byDepth.get(0) || [];
+  rootLayer.sort(); 
+  layers[0] = rootLayer;
+  rootLayer.forEach(id => placed.add(id));
+
+  // Layer 1...N
+  for (let d = 0; d < maxDepth; d++) {
+    const currentLayer = layers[d] ?? [];
+    const nextLayerCandidates: string[] = [];
+    
+    // 按父节点顺序添加子节点
+    for (const pid of currentLayer) {
+       const kids = children.get(pid) || [];
+       // 按 label 排序，保证同一父节点的子节点有序
+       kids.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+       
+       for (const k of kids) {
+         if (depth.get(k.to) === d + 1 && !placed.has(k.to)) {
+           nextLayerCandidates.push(k.to);
+           placed.add(k.to);
+         }
+       }
+    }
+    
+    // 添加遗漏的节点（孤立节点或父节点在更上层的）
+    const originalNextLayer = byDepth.get(d + 1) || [];
+    originalNextLayer.sort();
+    for (const id of originalNextLayer) {
+      if (!placed.has(id)) {
+        nextLayerCandidates.push(id);
+        placed.add(id);
+      }
+    }
+    
+    layers[d+1] = nextLayerCandidates;
   }
 
-  const xStep = 240;
-  const yStep = 110;
-  const padX = 140;
-  const padY = 120;
+  const xStep = 260; 
+  const yStep = 130; 
+  const padX = 50;
+  const padY = 50;
+  const cardW = 200;
+  const cardH = 100;
+
+  // 计算最大行数
+  let maxRow = 0;
+  for (const layer of layers) {
+      if (!layer) continue;
+      maxRow = Math.max(maxRow, layer.length);
+  }
+  
+  const totalH = Math.max(1, maxRow) * yStep;
+  const totalW = padX * 2 + (maxDepth + 1) * xStep;
 
   const pos = new Map<string, { x: number; y: number }>();
-  let maxRow = 0;
-  for (let d = 0; d <= maxDepth; d += 1) {
-    const ids = byDepth.get(d) ?? [];
-    maxRow = Math.max(maxRow, ids.length);
-    for (let i = 0; i < ids.length; i += 1) {
-      const id = ids[i];
+  
+  for (let d = 0; d <= maxDepth; d++) {
+    const layer = layers[d] ?? [];
+    const layerH = layer.length * yStep;
+    // 垂直居中每一层
+    const startY = padY + (totalH - layerH) / 2;
+    
+    for (let i = 0; i < layer.length; i++) {
+      const id = layer[i];
       if (!id) continue;
       pos.set(id, {
         x: padX + d * xStep,
-        y: padY + i * yStep,
+        y: startY + i * yStep,
       });
     }
   }
@@ -262,13 +329,12 @@ const treeGraph = computed(() => {
       depth: depth.get(id) ?? 0,
       x: p.x,
       y: p.y,
+      w: cardW,
+      h: cardH,
     });
   }
 
-  const w = padX * 2 + (maxDepth + 1) * xStep;
-  const h = padY * 2 + Math.max(1, maxRow) * yStep;
-
-  return { nodes: nodeVMs, edges, view: { w, h }, parent };
+  return { nodes: nodeVMs, edges, view: { w: totalW, h: totalH + padY * 2 }, parent };
 });
 
 const selectedId = ref<string>('');
@@ -276,7 +342,12 @@ const hoveredId = ref<string>('');
 const treeWrapEl = ref<HTMLDivElement | null>(null);
 const pan = ref({ x: 0, y: 0 });
 const zoom = ref(0.9);
-const dragging = ref<null | { x: number; y: number; panX: number; panY: number }>(null);
+const dragging = ref<null | {
+  x: number;
+  y: number;
+  panX: number;
+  panY: number;
+}>(null);
 
 const endingFocusId = computed(() => {
   if (endingDetails.value.endingKey) return endingDetails.value.endingKey;
@@ -286,7 +357,10 @@ const endingFocusId = computed(() => {
 
 const highlighted = computed(() => {
   const focus = endingFocusId.value;
-  const parent = (treeGraph.value as any).parent as Map<string, string> | undefined;
+  // biome-ignore lint/suspicious/noExplicitAny: D3 graph structure
+  const parent = (treeGraph.value as any).parent as
+    | Map<string, string>
+    | undefined;
   if (!focus || !parent) return new Set<string>();
   const out = new Set<string>();
   let cur: string | undefined = focus;
@@ -299,25 +373,52 @@ const highlighted = computed(() => {
   return out;
 });
 
-const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+const clamp = (v: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, v));
 
+/**
+ * Resets the tree view pan and zoom to default.
+ */
 const resetView = () => {
   zoom.value = 0.9;
   pan.value = { x: 0, y: 0 };
 };
 
+/**
+ * Auto-fits the tree visualization to the container.
+ * Calculates optimal scale and pan values.
+ */
 const fitTree = async () => {
   await nextTick();
   const el = treeWrapEl.value;
   if (!el) return;
   const rect = el.getBoundingClientRect();
   const view = treeGraph.value.view;
-  const scale = clamp(Math.min(rect.width / view.w, rect.height / view.h) * 0.92, 0.45, 1.2);
-  zoom.value = scale;
-  pan.value = {
-    x: (rect.width - view.w * scale) / 2,
-    y: (rect.height - view.h * scale) / 2,
-  };
+  
+  // Subtract padding from container dimensions to avoid edge hugging
+  const availableW = rect.width - 40; 
+  const availableH = rect.height - 40;
+
+  let scale = Math.min(availableW / view.w, availableH / view.h);
+
+  // 如果缩放比例太小，强制使用可读比例，并靠左对齐，保证让人看清
+  if (scale < 0.6) {
+    scale = 0.8;
+    zoom.value = scale;
+    // 靠左显示，垂直居中
+    pan.value = {
+      x: 40,
+      y: (rect.height - view.h * scale) / 2,
+    };
+  } else {
+    // 正常居中适配
+    scale = clamp(scale, 0.5, 1.5);
+    zoom.value = scale;
+    pan.value = {
+      x: (rect.width - view.w * scale) / 2,
+      y: (rect.height - view.h * scale) / 2,
+    };
+  }
 };
 
 watch(
@@ -354,7 +455,12 @@ const onWheel = (e: WheelEvent) => {
 const onPointerDown = (e: PointerEvent) => {
   if ((e.target as HTMLElement | null)?.closest?.('[data-node]')) return;
   (e.currentTarget as HTMLElement | null)?.setPointerCapture?.(e.pointerId);
-  dragging.value = { x: e.clientX, y: e.clientY, panX: pan.value.x, panY: pan.value.y };
+  dragging.value = {
+    x: e.clientX,
+    y: e.clientY,
+    panX: pan.value.x,
+    panY: pan.value.y,
+  };
 };
 
 const onPointerMove = (e: PointerEvent) => {
@@ -391,7 +497,11 @@ const selectedNodeInfo = computed(() => {
   return {
     id,
     kind: 'story' as const,
-    content: n.content?.text || '',
+    content:
+      typeof n.content === 'string'
+        ? n.content
+        : // biome-ignore lint/suspicious/noExplicitAny: Handle legacy object format
+          (n.content as any)?.text || '',
     endingKey: (n.endingKey || '').trim() || undefined,
     characters: n.characters || [],
     choices: (n.choices || []).map((c) => ({ text: c.text, to: c.nextNodeId })),
@@ -477,9 +587,20 @@ const selectedNodeInfo = computed(() => {
               </div>
               </div>
 
-              <div ref="treeWrapEl" class="mt-4 rounded-xl border border-white/10 bg-black/55 overflow-hidden h-[640px] md:h-[720px] relative" @wheel="onWheel" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp">
-                <svg :viewBox="`0 0 ${treeGraph.view.w} ${treeGraph.view.h}`" class="absolute inset-0 w-full h-full select-none" :style="{ cursor: dragging ? 'grabbing' : 'grab' }">
+              <div ref="treeWrapEl" class="mt-4 rounded-xl border border-white/10 bg-black/55 overflow-hidden h-[640px] md:h-[720px] relative touch-none" @wheel="onWheel" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp">
+                <svg class="absolute inset-0 w-full h-full select-none" :style="{ cursor: dragging ? 'grabbing' : 'grab' }">
+                  <defs>
+                    <linearGradient id="edge-gradient" gradientUnits="userSpaceOnUse" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stop-color="#9333ea" stop-opacity="0.3" />
+                      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.3" />
+                    </linearGradient>
+                    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+                      <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" opacity="0.5" />
+                    </marker>
+                  </defs>
+                  
                   <g :transform="`translate(${pan.x} ${pan.y}) scale(${zoom})`">
+                    <!-- Edges -->
                     <g>
                       <path
                         v-for="(e, idx) in treeGraph.edges"
@@ -488,43 +609,85 @@ const selectedNodeInfo = computed(() => {
                           const a = treeGraph.nodes.find(n => n.id === e.from);
                           const b = treeGraph.nodes.find(n => n.id === e.to);
                           if (!a || !b) return '';
-                          const mx = (a.x + b.x) / 2;
-                          return `M ${a.x} ${a.y} C ${mx} ${a.y}, ${mx} ${b.y}, ${b.x} ${b.y}`;
+                          
+                          // Connect from right of A to left of B
+                          const ax = a.x + a.w;
+                          const ay = a.y + a.h / 2;
+                          const bx = b.x;
+                          const by = b.y + b.h / 2;
+                          
+                          const mx = (ax + bx) / 2;
+                          return `M ${ax} ${ay} C ${mx} ${ay}, ${mx} ${by}, ${bx} ${by}`;
                         })()"
-                        :stroke="(highlighted.has(e.from) && highlighted.has(e.to)) ? 'rgba(217,70,239,0.32)' : 'rgba(255,255,255,0.14)'"
-                        stroke-width="2"
+                        :stroke="(highlighted.has(e.from) && highlighted.has(e.to)) ? '#d946ef' : 'url(#edge-gradient)'"
+                        :stroke-width="(highlighted.has(e.from) && highlighted.has(e.to)) ? 3 : 1.5"
+                        :stroke-opacity="(highlighted.has(e.from) && highlighted.has(e.to)) ? 0.8 : 0.3"
                         fill="none"
+                        class="transition-all duration-500"
+                        marker-end="url(#arrowhead)"
                       />
                     </g>
 
+                    <!-- Nodes -->
                     <g>
-                      <g v-for="n in treeGraph.nodes" :key="n.id" data-node @click.stop="selectedId = n.id" @pointerenter="hoveredId = n.id" @pointerleave="hoveredId = ''" :transform="`translate(${n.x} ${n.y})`" class="cursor-pointer">
-                        <circle
-                          :r="(n.kind === 'ending' ? 26 : 22) + ((hoveredId === n.id || selectedId === n.id) ? 5 : 0)"
-                          :fill="highlighted.has(n.id) ? 'rgba(217,70,239,0.45)' : (n.kind === 'ending' ? 'rgba(34,211,238,0.28)' : 'rgba(255,255,255,0.12)')"
-                          stroke="rgba(255,255,255,0.22)"
-                          :stroke-width="(hoveredId === n.id || selectedId === n.id) ? 3 : 2"
-                        />
-                        <circle
-                          :r="(n.kind === 'ending' ? 14 : 12) + ((hoveredId === n.id || selectedId === n.id) ? 2 : 0)"
-                          :fill="n.kind === 'ending' ? 'rgba(34,211,238,0.85)' : 'rgba(217,70,239,0.75)'"
-                          opacity="0.85"
-                        />
-                        <text x="0" y="44" text-anchor="middle" font-size="12" fill="rgba(255,255,255,0.78)" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
-                          {{ n.label.length > 14 ? n.label.slice(0, 14) + '…' : n.label }}
-                        </text>
-                      </g>
+                      <foreignObject 
+                        v-for="n in treeGraph.nodes" 
+                        :key="n.id" 
+                        :x="n.x" 
+                        :y="n.y" 
+                        :width="n.w" 
+                        :height="n.h"
+                        class="overflow-visible"
+                      >
+                        <div 
+                          data-node
+                          @click.stop="selectedId = n.id" 
+                          @pointerenter="hoveredId = n.id" 
+                          @pointerleave="hoveredId = ''"
+                          :class="[
+                            'w-full h-full rounded-xl border backdrop-blur-md flex flex-col justify-center px-4 py-2 transition-all duration-300 cursor-pointer shadow-lg group hover:scale-105',
+                            n.kind === 'ending' 
+                              ? 'bg-cyan-900/20 border-cyan-500/30 hover:border-cyan-400' 
+                              : 'bg-neutral-900/40 border-purple-500/20 hover:border-purple-400',
+                            highlighted.has(n.id) ? 'ring-2 ring-purple-500/50 shadow-[0_0_15px_rgba(168,85,247,0.3)]' : ''
+                          ]"
+                        >
+                          <div class="flex items-center justify-between mb-1">
+                            <span :class="['text-[10px] font-mono uppercase tracking-wider', n.kind === 'ending' ? 'text-cyan-400' : 'text-purple-400']">
+                              {{ n.kind === 'ending' ? 'ENDING' : 'NODE' }}
+                            </span>
+                            <div v-if="highlighted.has(n.id)" class="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shadow-[0_0_5px_rgba(74,222,128,0.8)]"></div>
+                          </div>
+                          <div class="text-xs font-bold text-white/90 truncate font-mono">
+                            {{ n.label }}
+                          </div>
+                          
+                          <!-- Hover Glow -->
+                          <div class="absolute inset-0 rounded-xl bg-gradient-to-r from-white/0 via-white/5 to-white/0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"></div>
+                        </div>
+                      </foreignObject>
                     </g>
                   </g>
                 </svg>
 
-                <div v-if="selectedNodeInfo" class="absolute right-3 top-3 w-[320px] max-w-[92%] rounded-xl border border-white/10 bg-black/55 backdrop-blur-md p-4">
-                  <div class="flex items-center justify-between gap-2">
+                <div 
+                  v-if="selectedNodeInfo" 
+                  class="absolute right-4 top-4 w-[320px] max-w-[90%] rounded-2xl border border-white/10 bg-black/90 backdrop-blur-xl p-5 shadow-2xl ring-1 ring-white/5 z-20"
+                  @pointerdown.stop
+                  @mousedown.stop
+                  @click.stop
+                >
+                  <div class="flex items-center justify-between gap-2 mb-4">
                     <div class="text-xs tracking-[0.22em] uppercase text-white/50 font-semibold">{{ selectedNodeInfo.kind === 'ending' ? 'Ending' : 'Node' }}</div>
-                    <button class="text-xs text-white/60 hover:text-white" @click="selectedId = ''">关闭</button>
+                    <button 
+                      class="text-white/40 hover:text-white p-1 rounded-full hover:bg-white/10 transition-colors" 
+                      @click.stop="selectedId = ''"
+                    >
+                      <X class="w-4 h-4" />
+                    </button>
                   </div>
 
-                  <div class="mt-2 font-mono text-white/90 break-all">{{ selectedNodeInfo.id }}</div>
+                  <div class="font-mono text-white/90 break-all text-sm font-bold border-b border-white/10 pb-3 mb-3">{{ selectedNodeInfo.id }}</div>
 
                   <template v-if="selectedNodeInfo.kind === 'ending'">
                     <div class="mt-3 text-sm text-white/80 leading-relaxed">{{ selectedNodeInfo.description }}</div>
@@ -533,7 +696,7 @@ const selectedNodeInfo = computed(() => {
                   <template v-else>
                     <div v-if="selectedNodeInfo.endingKey" class="mt-3 text-xs text-white/55">endingKey: {{ selectedNodeInfo.endingKey }}</div>
                     <div v-if="selectedNodeInfo.characters?.length" class="mt-3 text-xs text-white/55">characters: {{ selectedNodeInfo.characters.join(' / ') }}</div>
-                    <div class="mt-3 text-sm text-white/80 leading-relaxed max-h-[140px] overflow-auto">{{ selectedNodeInfo.content }}</div>
+                    <div class="mt-3 text-sm text-white/80 leading-relaxed max-h-[140px] overflow-auto custom-scrollbar">{{ selectedNodeInfo.content }}</div>
                     <div v-if="selectedNodeInfo.choices?.length" class="mt-3">
                       <div class="text-xs text-white/50 tracking-[0.18em] uppercase font-semibold">choices</div>
                       <div class="mt-2 space-y-1">
@@ -558,3 +721,19 @@ const selectedNodeInfo = computed(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+</style>

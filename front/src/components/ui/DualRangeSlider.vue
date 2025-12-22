@@ -9,30 +9,38 @@ const props = defineProps<{
   modelValue: [number, number];
 }>();
 
-const emit = defineEmits<{
-  (e: 'update:modelValue', value: [number, number]): void;
-}>();
+const emit =
+  defineEmits<(e: 'update:modelValue', value: [number, number]) => void>();
 
 const minVal = computed({
   get: () => props.modelValue[0],
   set: (val) => {
-    const newVal: [number, number] = [Math.min(val, props.modelValue[1]), props.modelValue[1]];
+    const newVal: [number, number] = [
+      Math.min(val, props.modelValue[1]),
+      props.modelValue[1],
+    ];
     emit('update:modelValue', newVal);
-  }
+  },
 });
 
 const maxVal = computed({
   get: () => props.modelValue[1],
   set: (val) => {
-    const newVal: [number, number] = [props.modelValue[0], Math.max(val, props.modelValue[0])];
+    const newVal: [number, number] = [
+      props.modelValue[0],
+      Math.max(val, props.modelValue[0]),
+    ];
     emit('update:modelValue', newVal);
-  }
+  },
 });
 
 // Calculate percentages for track fill
-const minPercent = computed(() => ((minVal.value - props.min) / (props.max - props.min)) * 100);
-const maxPercent = computed(() => ((maxVal.value - props.min) / (props.max - props.min)) * 100);
-
+const minPercent = computed(
+  () => ((minVal.value - props.min) / (props.max - props.min)) * 100,
+);
+const maxPercent = computed(
+  () => ((maxVal.value - props.min) / (props.max - props.min)) * 100,
+);
 </script>
 
 <template>

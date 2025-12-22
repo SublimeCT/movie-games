@@ -32,6 +32,7 @@ pub(crate) async fn init_db(db: &PgPool) -> Result<(), sqlx::Error> {
 pub(crate) async fn begin_glm_request_log(
     db: &PgPool,
     client_ip: &str,
+    user_agent: &str,
     route: &str,
     request_payload: serde_json::Value,
     glm_prompt: &str,
@@ -100,10 +101,11 @@ pub(crate) async fn begin_glm_request_log(
 
     let id = Uuid::new_v4();
     sqlx::query(
-        "insert into glm_requests (id, client_ip, route, status, request_payload, glm_prompt) values ($1, $2, $3, 'running', $4, $5)",
+        "insert into glm_requests (id, client_ip, user_agent, route, status, request_payload, glm_prompt) values ($1, $2, $3, $4, 'running', $5, $6)",
     )
     .bind(id)
     .bind(client_ip)
+    .bind(user_agent)
     .bind(route)
     .bind(request_payload)
     .bind(glm_prompt)

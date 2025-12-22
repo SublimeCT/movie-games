@@ -456,8 +456,6 @@ const backgroundMaskStyle = computed<Record<string, string>>(() => ({
     'linear-gradient(180deg, rgba(0,0,0,0.72) 0%, rgba(0,0,0,0.45) 45%, rgba(0,0,0,0.82) 100%), radial-gradient(1200px circle at 20% 20%, rgba(168,85,247,0.16), transparent 55%), radial-gradient(900px circle at 80% 30%, rgba(59,130,246,0.10), transparent 55%), radial-gradient(900px circle at 50% 90%, rgba(236,72,153,0.08), transparent 60%)',
 }));
 
-const isPromptOpen = ref(false);
-
 /**
  * Currently selected agent for the mobile popup.
  */

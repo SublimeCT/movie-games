@@ -1,12 +1,8 @@
 <script setup lang="ts">
-import { useMouse } from '@vueuse/core';
 import {
-  computed,
   type InjectionKey,
   inject,
-  provide,
   type Ref,
-  ref,
 } from 'vue';
 
 // --- Types & Context ---

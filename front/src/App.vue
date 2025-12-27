@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useStorage } from '@vueuse/core';
-import { onMounted } from 'vue';
+import { nextTick, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import type { Ending, MovieTemplate } from './types/movie';
 
@@ -63,12 +63,25 @@ onMounted(() => {
   }
 });
 
-const handleGameStart = (data: MovieTemplate) => {
+const handleGameStart = async (data: MovieTemplate) => {
   // Ensure fresh start for new game
   localStorage.removeItem('mg_current_node');
   localStorage.removeItem('mg_player_state');
+  
+  // Clear previous ending
+  endingData.value = null;
 
+  // Force update game data
+  gameData.value = null;
+  // Wait for reactivity system to clear
+  await nextTick();
+  
+  console.log('Starting new game with data:', data.title);
   gameData.value = data;
+  
+  // Wait for storage persistence
+  await nextTick();
+  
   router.push('/game');
 };
 

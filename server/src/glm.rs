@@ -3,14 +3,46 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use url::Url;
 
+// Import serde_json for error parsing
+use serde_json;
+
 const API_URL: &str = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 const DEFAULT_MODEL: &str = "glm-4.6v-flash";
 
 pub const GLM_LIMIT_FRIENDLY_MESSAGE: &str =
     "GLM 已达最大调用频率, 请填写自己的 API Key 并再次尝试";
 
+/// Error code 1305 from GLM API: "当前API请求过多，请稍后重试。"
+/// This indicates rate limiting, user should use their own API key.
+pub const GLM_RATE_LIMIT_CODE: &str = "1305";
+
+/// Parses GLM error response to extract error code
+/// Returns Some(code) if the response contains an error code, None otherwise
+pub fn extract_glm_error_code(text: &str) -> Option<String> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Some(error_obj) = value.get("error") {
+            if let Some(code) = error_obj.get("code") {
+                if let Some(code_str) = code.as_str() {
+                    return Some(code_str.to_string());
+                }
+                if let Some(code_i64) = code.as_i64() {
+                    return Some(code_i64.to_string());
+                }
+                if let Some(code_u64) = code.as_u64() {
+                    return Some(code_u64.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn contains_limit(text: &str) -> bool {
     text.to_ascii_lowercase().contains("limit")
+}
+
+pub fn is_rate_limit_error(text: &str) -> bool {
+    extract_glm_error_code(text).as_deref() == Some(GLM_RATE_LIMIT_CODE)
 }
 
 fn glm_api_key() -> Result<String, String> {
@@ -163,20 +195,41 @@ pub async fn call_glm_with_api_key(
     println!("GLM Request took: {:?}", duration);
 
     if !response.status().is_success() {
-        let status = response.status();
         let text = response.text().await.unwrap_or_default();
         println!("GLM Error Body: {}", text);
+
+        if is_rate_limit_error(&text) {
+             return Err(format!("GLM API 返回错误码 {}: {}", GLM_RATE_LIMIT_CODE, text));
+        }
 
         if contains_limit(&text) {
             return Err(GLM_LIMIT_FRIENDLY_MESSAGE.to_string());
         }
 
-        return Err(format!("API Error: {} - {}", status, text));
+        return Err(text);
     }
 
-    let chat_response: ChatResponse = response
-        .json()
+    let text_response = response
+        .text()
         .await
+        .map_err(|e| format!("Failed to read response text: {}", e))?;
+
+    // Try to parse as generic JSON first to check for "error" field
+    // (GLM sometimes returns 200 OK with "error" in body)
+    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text_response) {
+        if json_value.get("error").is_some() {
+            println!("GLM returned 200 OK but with error body: {}", text_response);
+            
+            // Check for rate limit in this body
+            if is_rate_limit_error(&text_response) {
+                 return Err(format!("GLM API 返回错误码 {}: {}", GLM_RATE_LIMIT_CODE, text_response));
+            }
+            
+            return Err(text_response);
+        }
+    }
+
+    let chat_response: ChatResponse = serde_json::from_str(&text_response)
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
     if let Some(usage) = chat_response.usage {

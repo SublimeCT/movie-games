@@ -6,13 +6,13 @@ const API_BASE = '/api';
 
 export class ApiError extends Error {
   status: number;
-  code?: string;
+  code: string;
   payload?: unknown;
 
   constructor(
     status: number,
     message: string,
-    code?: string,
+    code: string,
     payload?: unknown,
   ) {
     super(message);
@@ -37,24 +37,45 @@ export interface GenerateRequest {
   model?: string;
 }
 
-type ErrorPayload = {
-  error?: string;
-  code?: string;
-  activeRequests?: number;
+// 统一 API 响应格式
+type ApiResponse<T> = {
+  code: string;
+  msg: string;
+  data?: T;
+};
+
+type ErrorResponse = {
+  code: string;
+  msg: string;
 };
 
 async function parseApiError(response: Response): Promise<ApiError> {
   const text = await response.text();
   try {
-    const json = JSON.parse(text) as ErrorPayload;
-    const message = json.error || text || `API Error: ${response.status}`;
-    return new ApiError(response.status, message, json.code, json);
+    const json = JSON.parse(text) as ErrorResponse;
+    const message = json.msg || text || `API Error: ${response.status}`;
+    const code = json.code || 'UNKNOWN_ERROR';
+    return new ApiError(response.status, message, code, json);
   } catch {
     return new ApiError(
       response.status,
       text || `API Error: ${response.status}`,
+      'PARSE_ERROR',
     );
   }
+}
+
+async function parseApiResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+  const json = (await response.json()) as ApiResponse<T>;
+  // code = "0" 表示成功
+  if (json.code === '0' && json.data !== undefined) {
+    return json.data;
+  }
+  // 如果 code 不是 "0"，视为错误
+  throw new ApiError(response.status, json.msg || 'Unknown error', json.code);
 }
 
 export interface CharacterInput {
@@ -75,9 +96,7 @@ export async function generateGame(
     body: JSON.stringify(req),
   });
 
-  if (!response.ok) throw await parseApiError(response);
-
-  return response.json();
+  return parseApiResponse<MovieTemplate>(response);
 }
 
 export async function generatePrompt(req: GenerateRequest): Promise<string> {
@@ -89,9 +108,7 @@ export async function generatePrompt(req: GenerateRequest): Promise<string> {
     body: JSON.stringify(req),
   });
 
-  if (!response.ok) throw await parseApiError(response);
-  const data = (await response.json()) as { prompt?: string };
-  return data.prompt || '';
+  return parseApiResponse<string>(response);
 }
 
 export async function expandSynopsis(
@@ -114,9 +131,8 @@ export async function expandSynopsis(
       model,
     }),
   });
-  if (!response.ok) throw await parseApiError(response);
-  const data = (await response.json()) as { worldview: string };
-  return data.worldview;
+
+  return parseApiResponse<string>(response);
 }
 
 export async function expandCharacter(
@@ -141,7 +157,6 @@ export async function expandCharacter(
       model,
     }),
   });
-  if (!response.ok) throw await parseApiError(response);
-  const data = await response.json();
-  return data.characters;
+
+  return parseApiResponse<CharacterInput[]>(response);
 }

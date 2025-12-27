@@ -452,9 +452,20 @@ const onWheel = (e: WheelEvent) => {
   };
 };
 
+const isDragging = ref(false);
+const dragStart = ref({ x: 0, y: 0 });
+
 const onPointerDown = (e: PointerEvent) => {
-  if ((e.target as HTMLElement | null)?.closest?.('[data-node]')) return;
-  (e.currentTarget as HTMLElement | null)?.setPointerCapture?.(e.pointerId);
+  // Record start position to detect drag vs click
+  dragStart.value = { x: e.clientX, y: e.clientY };
+  isDragging.value = false;
+
+  // We don't capture immediately to allow click events to propagate naturally
+  // if no movement occurs. But we need to track movement.
+  // Actually, for smooth dragging, we usually want capture.
+  // Let's capture, but handle click vs drag manually.
+  // (e.currentTarget as HTMLElement | null)?.setPointerCapture?.(e.pointerId);
+  
   dragging.value = {
     x: e.clientX,
     y: e.clientY,
@@ -465,13 +476,31 @@ const onPointerDown = (e: PointerEvent) => {
 
 const onPointerMove = (e: PointerEvent) => {
   if (!dragging.value) return;
+  
   const dx = e.clientX - dragging.value.x;
   const dy = e.clientY - dragging.value.y;
+  
+  // If moved significantly, mark as dragging
+  if (!isDragging.value && (Math.abs(e.clientX - dragStart.value.x) > 5 || Math.abs(e.clientY - dragStart.value.y) > 5)) {
+    isDragging.value = true;
+  }
+  
   pan.value = { x: dragging.value.panX + dx, y: dragging.value.panY + dy };
 };
 
 const onPointerUp = () => {
   dragging.value = null;
+  // We don't reset isDragging here immediately if we need to check it in click handlers
+  // But click handlers usually fire after pointerup.
+  // Let's rely on isDragging in the click handler.
+  setTimeout(() => {
+    isDragging.value = false;
+  }, 50);
+};
+
+const onNodeClick = (id: string) => {
+  if (isDragging.value) return;
+  selectedId.value = id;
 };
 
 const onGlobalPointerUp = () => {
@@ -641,7 +670,7 @@ const selectedNodeInfo = computed(() => {
                       >
                         <div 
                           data-node
-                          @click.stop="selectedId = n.id" 
+                          @click.stop="onNodeClick(n.id)" 
                           @pointerenter="hoveredId = n.id" 
                           @pointerleave="hoveredId = ''"
                           :class="[

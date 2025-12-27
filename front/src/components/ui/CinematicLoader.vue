@@ -46,14 +46,16 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 bg-black">
-    <FluidCursor class="z-[60]" />
+  <div class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm">
     <Vortex
         background-color="transparent"
-        :range-y="800"
         :particle-count="800"
         :base-hue="260"
-        class="flex flex-col items-center justify-center"
+        :base-speed="0.5"
+        :range-speed="1.5"
+        :base-radius="2"
+        :range-radius="0"
+        class="flex flex-col items-center justify-center h-full w-full"
       >
         <ThreeDCard class="w-full max-w-md">
           <div class="relative w-full p-8 text-center space-y-8 backdrop-blur-sm rounded-3xl border border-white/10 bg-black/40">

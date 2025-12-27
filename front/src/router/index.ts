@@ -12,6 +12,11 @@ const router = createRouter({
       component: Home,
     },
     {
+      path: '/generating',
+      name: 'generating',
+      component: () => import('../components/Generating.vue'),
+    },
+    {
       path: '/game',
       name: 'game',
       component: Game,

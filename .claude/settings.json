@@ -1,13 +1,21 @@
 {
   "permissions": {
     "allow": [
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(cargo check:*)"
     ],
     "deny": [
       "Bash(pnpm:*)",
       "Bash(npm:*)",
       "Bash(npx:*)",
-      "Bash(cargo:*)"
+      "Bash(node:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(bash:*)",
+      "Bash(sh:*)",
+      "Bash(rm:*)",
+      "Bash(cargo run:*)",
+      "Bash(cargo build:*)"
     ]
   }
 }

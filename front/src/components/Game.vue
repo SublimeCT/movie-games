@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useStorage } from '@vueuse/core';
-import { ArrowLeft, Home as HomeIcon, X } from 'lucide-vue-next';
+import { ArrowLeft, ArrowRight, Home as HomeIcon, X } from 'lucide-vue-next';
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import type { Character, Choice, Ending, MovieTemplate } from '../types/movie';
@@ -13,15 +13,27 @@ const props = defineProps<{
   data?: MovieTemplate | null;
 }>();
 
-const emit = defineEmits<(e: 'end', ending: Ending) => void>();
+const emit = defineEmits<{
+  (e: 'end', ending: Ending): void;
+  (e: 'start'): void;
+  (e: 'restartPlay'): void;
+  (e: 'remake'): void;
+}>();
+
+// Local game data - from props or sessionStorage
+const localData = ref<MovieTemplate | null>(null);
+
+// Use localData for all operations
+const gameData = computed(() => localData.value || props.data);
 
 /**
  * Helper to find the start node ID from the data.
  * Checks for 'start', 'n_start', 'root', '1' or defaults to the first key.
  */
 const startNodeId = computed(() => {
-  if (!props.data?.nodes) return '';
-  const keys = Object.keys(props.data.nodes);
+  const data = gameData.value;
+  if (!data?.nodes) return '';
+  const keys = Object.keys(data.nodes);
   if (keys.length === 0) return '';
   if (keys.includes('start')) return 'start';
   if (keys.includes('n_start')) return 'n_start';
@@ -94,7 +106,7 @@ watch(currentNodeId, (newId) => {
  * @param {string} nodeId - The node ID to check.
  */
 const checkEnding = (nodeId: string) => {
-  const data = props.data;
+  const data = gameData.value;
   if (!data) return;
 
   const node = data.nodes?.[nodeId];
@@ -179,11 +191,26 @@ const goHome = () => {
  * Sets the start node if not set, and checks for endings.
  */
 onMounted(() => {
-  if (!props.data?.nodes) return;
+  // Try to load data from sessionStorage first (from Generating page)
+  // This is deprecated as we now use global state in App.vue
+  /*
+  const storedData = sessionStorage.getItem('mg_game_data');
+  if (storedData) {
+    try {
+      localData.value = JSON.parse(storedData);
+      sessionStorage.removeItem('mg_game_data');
+    } catch {
+      // Ignore parse errors
+    }
+  }
+  */
+
+  const data = gameData.value;
+  if (!data?.nodes) return;
   if (
     !currentNodeId.value ||
-    (!props.data.nodes[currentNodeId.value] &&
-      !props.data.endings?.[currentNodeId.value])
+    (!data.nodes[currentNodeId.value] &&
+      !data.endings?.[currentNodeId.value])
   ) {
     resetToStart();
   }
@@ -191,7 +218,7 @@ onMounted(() => {
 });
 
 watch(
-  () => props.data,
+  () => gameData.value,
   (next) => {
     if (!next?.nodes) return;
     if (
@@ -221,13 +248,14 @@ const handleBack = () => {
 /**
  * Computed property for the current node object.
  */
-const currentNode = computed(() => props.data?.nodes?.[currentNodeId.value]);
+const currentNode = computed(() => gameData.value?.nodes?.[currentNodeId.value]);
 
 const missingNode = computed(() => {
-  if (!props.data?.nodes) return false;
+  const data = gameData.value;
+  if (!data?.nodes) return false;
   if (!currentNodeId.value) return false;
-  if (props.data.endings?.[currentNodeId.value]) return false;
-  return !props.data.nodes[currentNodeId.value];
+  if (data.endings?.[currentNodeId.value]) return false;
+  return !data.nodes[currentNodeId.value];
 });
 
 /**
@@ -235,6 +263,7 @@ const missingNode = computed(() => {
  * Infers characters from the node data or defaults to the protagonist.
  */
 const currentAgents = computed(() => {
+  const data = gameData.value;
   let agents: Character[] = [];
 
   // 1. Try to find explicitly listed characters
@@ -245,7 +274,7 @@ const currentAgents = computed(() => {
     currentNode.value.characters.forEach((name, idx) => {
       const n = (name || '').trim();
       if (!n) return;
-      const char = Object.values(props.data?.characters || {}).find(
+      const char = Object.values(data?.characters || {}).find(
         (c) => c.name === n || c.id === n,
       );
       if (char) {
@@ -264,8 +293,8 @@ const currentAgents = computed(() => {
     });
   }
 
-  if (agents.length === 0 && props.data?.characters) {
-    const selected = selectDefaultCharacter(props.data.characters);
+  if (agents.length === 0 && data?.characters) {
+    const selected = selectDefaultCharacter(data.characters);
     if (selected) agents.push(selected);
   }
 
@@ -278,7 +307,7 @@ const currentAgents = computed(() => {
   });
 
   if (agents.length === 0) {
-    const seed = (props.data?.projectId || props.data?.title || 'mg')
+    const seed = (data?.projectId || data?.title || 'mg')
       .split('')
       .reduce((a, b) => a + b.charCodeAt(0), 0);
     const gender = seed % 2 === 0 ? 'Male' : 'Female';
@@ -378,9 +407,10 @@ const handleChoice = async (choice: Choice) => {
   }
 
   // Check if nextNodeId is an ending ID
-  if (props.data?.endings?.[nextId]) {
+  const data = gameData.value;
+  if (data?.endings?.[nextId]) {
     emit('end', {
-      ...props.data.endings[nextId],
+      ...data.endings[nextId],
       endingKey: nextId,
       nodeId: currentNodeId.value,
       reachedAt: new Date().toISOString(),
@@ -388,7 +418,7 @@ const handleChoice = async (choice: Choice) => {
     return;
   }
 
-  if (!props.data?.nodes?.[nextId]) {
+  if (!data?.nodes?.[nextId]) {
     navigationError.value = `无效跳转：${choice.nextNodeId}`;
     return;
   }
@@ -424,7 +454,7 @@ const getEmotion = (agent: Character) => {
 };
 
 const backgroundImageBase64 = computed(() =>
-  (props.data?.backgroundImageBase64 || '').trim(),
+  (gameData.value?.backgroundImageBase64 || '').trim(),
 );
 
 const backgroundBaseStyle = computed<Record<string, string>>(() => {
@@ -523,7 +553,7 @@ const handleAvatarClick = (agent: Character) => {
       <!-- Top Bar -->
       <header class="absolute top-0 left-0 w-full p-6 flex justify-between items-center z-50 pointer-events-none">
           <div class="pointer-events-auto">
-              <h2 class="text-white/50 text-xs tracking-[0.2em] uppercase font-bold backdrop-blur-sm px-3 py-1 rounded-full border border-white/10">{{ data?.title || 'Movie Game' }}</h2>
+              <h2 class="text-white/50 text-xs tracking-[0.2em] uppercase font-bold backdrop-blur-sm px-3 py-1 rounded-full border border-white/10">{{ gameData?.title || 'Movie Game' }}</h2>
           </div>
           
           <div class="flex items-center gap-3 pointer-events-auto">
@@ -632,7 +662,7 @@ const handleAvatarClick = (agent: Character) => {
                         leave-to-class="opacity-0 -translate-y-2"
                       >
                           <p :key="currentNodeId" class="text-lg md:text-2xl leading-relaxed font-light text-neutral-100 text-center drop-shadow-md">
-                              {{ (typeof currentNode?.content === 'string' ? currentNode.content : (currentNode?.content as any)?.text) || (data ? '...' : '没有可用的游戏数据，请返回首页重新生成或导入。') }}
+                              {{ (typeof currentNode?.content === 'string' ? currentNode.content : (currentNode?.content as any)?.text) || (gameData ? '...' : '没有可用的游戏数据，请返回首页重新生成或导入。') }}
                           </p>
                       </Transition>
                   </div>
@@ -663,7 +693,7 @@ const handleAvatarClick = (agent: Character) => {
                            </div>
                        </button>
 
-                       <button v-if="!data" @click="goHome" class="w-full text-left bg-white/5 hover:bg-white/10 border border-white/10 hover:border-purple-500/50 p-4 md:p-5 rounded-xl transition-all duration-300">
+                       <button v-if="!gameData" @click="goHome" class="w-full text-left bg-white/5 hover:bg-white/10 border border-white/10 hover:border-purple-500/50 p-4 md:p-5 rounded-xl transition-all duration-300">
                          <span class="text-neutral-200 text-base md:text-lg font-light tracking-wide">返回首页</span>
                        </button>
 
@@ -671,6 +701,11 @@ const handleAvatarClick = (agent: Character) => {
                          <span class="text-neutral-200 text-base md:text-lg font-light tracking-wide">回到上一步</span>
                        </button>
                   </div>
+                  
+                  <!-- Node ID Overlay -->
+                   <div class="absolute bottom-1 right-2 text-[10px] text-white/30 font-mono select-none pointer-events-none">
+                     {{ currentNodeId }}
+                   </div>
               </div>
             </ThreeDCard>
           </div>

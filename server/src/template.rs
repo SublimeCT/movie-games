@@ -2,17 +2,8 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::api_types::{CharacterInput, GenerateRequest};
-use crate::types::{self, Character, MovieTemplate};
-
-fn simple_hash_u32(s: &str) -> u32 {
-    let mut h: u32 = 2166136261;
-    for b in s.as_bytes() {
-        h ^= *b as u32;
-        h = h.wrapping_mul(16777619);
-    }
-    h
-}
+use crate::api_types::CharacterInput;
+use crate::types::{self, MovieTemplate};
 
 fn deserialize_option_string_or_vec<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
@@ -38,7 +29,7 @@ where
 pub(crate) struct MovieTemplateLite {
     title: Option<String>,
     meta: Option<MetaInfoLite>,
-    nodes: Option<HashMap<String, StoryNodeLite>>,
+    nodes: Option<HashMap<String, StoryNodeLiteOrString>>,
     characters: Option<HashMap<String, CharacterLite>>,
     endings: Option<HashMap<String, types::Ending>>,
 }
@@ -83,11 +74,22 @@ impl From<CharacterLite> for types::Character {
 }
 
 #[derive(Deserialize)]
+#[serde(untagged)]
+enum StoryNodeLiteOrString {
+    Node(StoryNodeLite),
+    // Fallback for cases where node is just a string content
+    String(String),
+    // Fallback for empty object or null
+    Empty {},
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoryNodeLite {
     id: Option<String>,
     node_id: Option<String>,
-    content: Option<String>,
+    #[serde(alias = "text")]
+    content: Option<String>, // Support 'text' as alias for 'content'
     ending_key: Option<String>,
     level: Option<u32>,
     characters: Option<Vec<String>>,
@@ -154,7 +156,27 @@ pub(crate) fn convert_lite_to_full(lite: MovieTemplateLite, language: &str) -> M
             .nodes
             .unwrap_or_default()
             .into_iter()
-            .map(|(k, v)| (k.clone(), convert_node_lite(k, v)))
+            .filter_map(|(k, v)| match v {
+                StoryNodeLiteOrString::Node(node) => Some((k.clone(), convert_node_lite(k, node))),
+                StoryNodeLiteOrString::String(s) => {
+                    if s.trim().is_empty() {
+                        None
+                    } else {
+                        Some((
+                            k.clone(),
+                            types::StoryNode {
+                                id: k,
+                                content: s,
+                                ending_key: None,
+                                level: None,
+                                characters: None,
+                                choices: Vec::new(),
+                            },
+                        ))
+                    }
+                }
+                StoryNodeLiteOrString::Empty {} => None,
+            })
             .collect(),
         characters: lite
             .characters
@@ -167,15 +189,7 @@ pub(crate) fn convert_lite_to_full(lite: MovieTemplateLite, language: &str) -> M
     }
 }
 
-pub(crate) fn fallback_template_lite(title: &str) -> MovieTemplateLite {
-    MovieTemplateLite {
-        title: Some(title.to_string()),
-        meta: None,
-        nodes: None,
-        characters: None,
-        endings: None,
-    }
-}
+
 
 pub(crate) fn normalize_character_ids(template: &mut MovieTemplate) {
     for (k, c) in template.characters.iter_mut() {
@@ -190,8 +204,12 @@ pub(crate) fn normalize_template_nodes(template: &mut MovieTemplate) {
 
     let mut mapping: HashMap<String, String> = HashMap::new();
     let mut used: HashMap<String, usize> = HashMap::new();
+    
+    // Sort keys to ensure deterministic order (optional but good for consistency)
+    let mut keys: Vec<String> = template.nodes.keys().cloned().collect();
+    keys.sort();
 
-    for old_key in template.nodes.keys() {
+    for old_key in keys {
         let base = if old_key == "start" {
             "n_start".to_string()
         } else if old_key.starts_with("n_") {
@@ -508,6 +526,88 @@ pub(crate) fn sanitize_template_graph(template: &mut MovieTemplate) {
     }
 }
 
+pub(crate) fn enforce_character_consistency(
+    template: &mut MovieTemplate,
+    req_characters: Option<Vec<CharacterInput>>,
+) {
+    if let Some(chars) = req_characters {
+        let mut name_replacements: HashMap<String, String> = HashMap::new();
+
+        for input_char in chars {
+            // 1. Try to find exact match by name
+            let mut target_id = template
+                .characters
+                .iter()
+                .find(|(_, c)| c.name == input_char.name)
+                .map(|(k, _)| k.clone());
+
+            // 2. If not found and is_main, try to find placeholder
+            if target_id.is_none() && input_char.is_main {
+                target_id = template
+                    .characters
+                    .iter()
+                    .find(|(k, c)| {
+                        k.as_str() == "c_player" || c.name == "玩家" || c.name == "Player"
+                    })
+                    .map(|(k, _)| k.clone());
+
+                if let Some(ref tid) = target_id {
+                    // We found a placeholder, we are going to overwrite it.
+                    // We should record the name change so we can update nodes.
+                    if let Some(c) = template.characters.get(tid) {
+                        if c.name != input_char.name {
+                            name_replacements.insert(c.name.clone(), input_char.name.clone());
+                        }
+                    }
+                }
+            }
+
+            if let Some(id) = target_id {
+                if let Some(c) = template.characters.get_mut(&id) {
+                    c.name = input_char.name.clone();
+                    c.gender = input_char.gender.clone();
+                    // User said: "must return character info passed by frontend exactly as is"
+                    // So let's strictly set role and background to description.
+                    c.role = input_char.description.clone();
+                    c.background = input_char.description.clone();
+                }
+            } else {
+                let new_id = if input_char.is_main {
+                    "c_player".to_string()
+                } else {
+                    uuid::Uuid::new_v4().to_string()
+                };
+                template.characters.insert(
+                    new_id.clone(),
+                    types::Character {
+                        id: new_id,
+                        name: input_char.name.clone(),
+                        gender: input_char.gender.clone(),
+                        age: 25,
+                        role: input_char.description.clone(),
+                        background: input_char.description.clone(),
+                        avatar_path: None,
+                    },
+                );
+            }
+        }
+
+        // Apply name replacements to nodes
+        if !name_replacements.is_empty() {
+            for node in template.nodes.values_mut() {
+                if let Some(ref mut node_chars) = node.characters {
+                    for char_name in node_chars.iter_mut() {
+                        if let Some(new_name) = name_replacements.get(char_name) {
+                            *char_name = new_name.clone();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub(crate) fn ensure_minimum_game_graph(
     template: &mut MovieTemplate,
     language_tag: &str,
@@ -522,6 +622,8 @@ pub(crate) fn ensure_minimum_game_graph(
         .and_then(|cs| cs.iter().find(|c| c.is_main).or_else(|| cs.first()))
         .map(|c| (c.name.clone(), c.gender.clone()))
         .unwrap_or_else(|| ("主角".to_string(), "男".to_string()));
+
+    enforce_character_consistency(template, req_characters);
 
     if template.endings.is_empty() {
         template.endings.insert(
@@ -627,127 +729,5 @@ pub(crate) fn ensure_minimum_game_graph(
     }
 }
 
-pub(crate) fn enforce_request_character_consistency(
-    template: &mut MovieTemplate,
-    req: &GenerateRequest,
-) {
-    let Some(req_chars) = req.characters.as_ref() else {
-        return;
-    };
-
-    let protagonist = req_chars
-        .iter()
-        .find(|c| c.is_main)
-        .or_else(|| req_chars.first());
-    let Some(protagonist) = protagonist else {
-        return;
-    };
-
-    let canonical_name = protagonist.name.trim().to_string();
-    if canonical_name.is_empty() {
-        return;
-    }
-
-    let canonical_gender = protagonist.gender.trim().to_string();
-    let placeholders = [
-        "玩家",
-        "主角",
-        "我",
-        "player",
-        "Player",
-        "protagonist",
-        "Protagonist",
-    ];
-
-    for node in template.nodes.values_mut() {
-        if let Some(chars) = node.characters.as_mut() {
-            for name in chars.iter_mut() {
-                if placeholders.iter().any(|p| p == name) {
-                    *name = canonical_name.clone();
-                }
-            }
-        }
-    }
-
-    for c in template.characters.values_mut() {
-        if placeholders.iter().any(|p| p == &c.name) {
-            c.name = canonical_name.clone();
-            if !canonical_gender.is_empty() {
-                c.gender = canonical_gender.clone();
-            }
-        }
-    }
-}
-
-pub(crate) fn ensure_request_characters_present(
-    template: &mut MovieTemplate,
-    req: &GenerateRequest,
-) {
-    let Some(req_chars) = req.characters.as_ref() else {
-        return;
-    };
-
-    let mut idx = 0usize;
-    for rc in req_chars {
-        let name = rc.name.trim();
-        if name.is_empty() {
-            continue;
-        }
-
-        let exists = template.characters.values().any(|c| c.name.trim() == name);
-        if exists {
-            for c in template.characters.values_mut() {
-                if c.name.trim() == name {
-                    if c.gender.trim().is_empty() {
-                        let g = rc.gender.trim();
-                        if !g.is_empty() {
-                            c.gender = g.to_string();
-                        }
-                    }
-                }
-            }
-            continue;
-        }
-
-        let key = if rc.is_main {
-            "player_protagonist".to_string()
-        } else {
-            idx += 1;
-            format!("c_req_{:02}", idx)
-        };
-
-        if template.characters.contains_key(&key) {
-            idx += 1;
-        }
-
-        let key = if template.characters.contains_key(&key) {
-            format!("c_req_{}", simple_hash_u32(&format!("{}::{}", name, idx)))
-        } else {
-            key
-        };
-
-        let g = rc.gender.trim();
-        let gender = if g.is_empty() {
-            "Unknown".to_string()
-        } else {
-            g.to_string()
-        };
-
-        template.characters.insert(
-            key.clone(),
-            Character {
-                id: key,
-                name: name.to_string(),
-                gender,
-                age: 0,
-                role: if rc.is_main {
-                    "Protagonist".to_string()
-                } else {
-                    "Supporting".to_string()
-                },
-                background: rc.description.trim().to_string(),
-                avatar_path: None,
-            },
-        );
-    }
-}
+// REMOVED: enforce_request_character_consistency and ensure_request_characters_present
+// because they were unused and user requested cleanup.

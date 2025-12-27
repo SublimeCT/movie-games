@@ -73,8 +73,7 @@ pub(crate) fn construct_prompt(req: &GenerateRequest) -> String {
         language_tag.to_string()
     };
 
-    let types_def = r#"
-export interface MovieTemplate {
+    let types_def = r#"interface MovieTemplate {
   projectId: string
   title: string
   version: string
@@ -86,16 +85,14 @@ export interface MovieTemplate {
   characters: Record<string, Character>
   provenance: Provenance
 }
-
-export interface MetaInfo {
+interface MetaInfo {
   logline: string
   synopsis: string
   targetRuntimeMinutes: number
   genre: string
   language: string
 }
-
-export interface Character {
+interface Character {
   id: string
   name: string
   gender?: string
@@ -104,8 +101,7 @@ export interface Character {
   background: string
   avatarPath?: string
 }
-
-export interface StoryNode {
+interface StoryNode {
   id: string
   endingKey?: string
   content: string
@@ -113,21 +109,18 @@ export interface StoryNode {
   characters?: string[]
   choices: Choice[]
 }
-
-export interface Choice {
+interface Choice {
   text: string
   nextNodeId: string
 }
-
-export interface Ending {
+interface Ending {
   type: 'good' | 'neutral' | 'bad'
   description: string
   endingKey?: string
   nodeId?: string
   reachedAt?: string
 }
-
-export interface Provenance {
+interface Provenance {
   createdBy: string
   createdAt: string
 }
@@ -147,14 +140,11 @@ export interface Provenance {
         .unwrap_or_else(|| "主角".to_string());
 
     format!(
-        r#"
-# 角色定义
+        r#"# 角色定义
 你是一位享誉全球的互动电影游戏编剧和总导演。你擅长创作引人入胜、逻辑严密且充满情感冲击力的多分支剧情。
 你的任务是根据用户提供的主题，创作一个完整的互动电影剧本，并将其直接输出为符合 TypeScript 接口定义的 JSON 格式。
-
 # 用户输入主题
 "{}"
-
 # 核心要求 (必须严格遵守)
 1. **第一人称叙事**：所有的 `node.content` 必须使用**第一人称 (\"我\")** 进行叙述。玩家就是主角，代入感必须极强。
 2. **禁止循环引用**：剧情节点之间严禁出现死循环。必须确保所有分支最终都能导向结局。
@@ -218,15 +208,12 @@ export interface Provenance {
     - 所有 `endingKey` 必须是 `endings` 中存在的 key。
     - 严禁出现引用不存在的节点/结局（例如写了 `n_12` 但 `nodes` 里没有 `n_12`）。
     - 输出前必须自检：遍历所有节点与选项，确保每一个引用都能在 JSON 内部找到。
-
 # 用户提供的角色清单 (JSON)
 {}
-
 # TypeScript 类型定义 (Schema)
 ```typescript
 {}
 ```
-
 # 输出规则
 - 输出必须是 **纯 JSON** 文本。
 - **不要** 包含 markdown 代码块标记 (如 ```json ... ```)。
@@ -237,7 +224,6 @@ export interface Provenance {
 - `endings` 必须在 3~5 个之间。
 - `endings` 的 key 必须使用：`ending_good` / `ending_neutral` / `ending_bad`（如果有额外结局，必须保持同样的 `ending_*` 风格）。
 - 确保 `n_start` (作为起始节点) 存在于 `nodes` 中。
-
 开始创作！
 "#,
         full_topic, language_label, protagonist_name, characters_json, types_def

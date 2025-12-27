@@ -81,7 +81,10 @@ class Particle {
     this.life++;
 
     // Reset if too close to center or dead
-    if (this.distance < 10 || this.life > this.ttl) {
+    // User wants particles NOT to disappear in the middle.
+    // We'll reset only when they are basically at the singularity (distance < 2)
+    // And we extend TTL significantly to ensure they reach the center
+    if (this.distance < 2) {
       this.reset(width, height);
     }
   }
@@ -91,22 +94,32 @@ class Particle {
     const centerY = height / 2;
     // Spawn at edges or random
     const angle = Math.random() * Math.PI * 2;
-    const distance = Math.max(width, height) * 0.5 + Math.random() * 100; // Spawn closer
+    const distance = Math.max(width, height) * 0.6 + Math.random() * 100; // Spawn further out
 
     this.angle = angle;
     this.distance = distance;
     this.x = centerX + Math.cos(angle) * distance;
     this.y = centerY + Math.sin(angle) * distance;
 
+    // Reset life and make it practically infinite so they don't die on the way
     this.life = 0;
-    this.ttl = Math.random() * 200 + 300; // Consistent long TTL
+    this.ttl = 10000;
     this.hue = props.baseHue + Math.random() * 30;
   }
 
-  draw(ctx: CanvasRenderingContext2D) {
+  draw(ctx: CanvasRenderingContext2D, width: number, height: number) {
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-    ctx.fillStyle = `hsla(${this.hue}, 60%, 50%, ${0.8 * (1 - this.life / this.ttl)})`;
+    
+    // Calculate fade radius: 20% of the minimum screen dimension (diameter) -> 10% radius
+    // "中间位置(按屏幕可视区域宽高中的最小值来算, 靠近中心点 20%)"
+    const minDim = Math.min(width, height);
+    const fadeRadius = minDim * 0.1; 
+    
+    // Opacity fades out as it approaches the center
+    const opacity = Math.min(1, this.distance / fadeRadius);
+    
+    ctx.fillStyle = `hsla(${this.hue}, 60%, 50%, ${0.8 * opacity})`;
     ctx.fill();
     ctx.closePath();
   }
@@ -135,7 +148,7 @@ const render = () => {
 
   particles.forEach((p) => {
     p.update(width, height, tick);
-    p.draw(ctx);
+    p.draw(ctx, width, height);
   });
 
   animationFrameId = requestAnimationFrame(render);

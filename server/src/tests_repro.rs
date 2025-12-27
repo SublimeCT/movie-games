@@ -5,7 +5,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::types::MovieTemplate;
-    use crate::types::{Choice, MetaInfo, NodeContent, Provenance, StoryNode};
+    use crate::types::{Choice, MetaInfo, Provenance, StoryNode};
     use serde_json::from_str;
 
     use crate::api_types::GenerateRequest;
@@ -202,11 +202,9 @@ mod tests {
                 "node_start".to_string(),
                 StoryNode {
                     id: "node_start".to_string(),
-                    content: NodeContent {
-                        text: "...".to_string(),
-                        notes: None,
-                    },
+                    content: "...".to_string(),
                     ending_key: None,
+                    level: None,
                     characters: None,
                     choices: vec![Choice {
                         text: "go".to_string(),
@@ -219,11 +217,9 @@ mod tests {
                 "node_1".to_string(),
                 StoryNode {
                     id: "node_1".to_string(),
-                    content: NodeContent {
-                        text: "...".to_string(),
-                        notes: None,
-                    },
+                    content: "...".to_string(),
                     ending_key: None,
+                    level: None,
                     characters: None,
                     choices: vec![],
                 },
@@ -233,11 +229,9 @@ mod tests {
                 "n_keep".to_string(),
                 StoryNode {
                     id: "n_keep".to_string(),
-                    content: NodeContent {
-                        text: "...".to_string(),
-                        notes: None,
-                    },
+                    content: "...".to_string(),
                     ending_key: None,
+                    level: None,
                     characters: None,
                     choices: vec![],
                 },
@@ -387,11 +381,9 @@ mod tests {
                 "n_start".to_string(),
                 StoryNode {
                     id: "n_start".to_string(),
-                    content: NodeContent {
-                        text: "...".to_string(),
-                        notes: None,
-                    },
+                    content: "...".to_string(),
                     ending_key: None,
+                    level: None,
                     characters: None,
                     choices: vec![Choice {
                         text: "go".to_string(),
@@ -447,11 +439,9 @@ mod tests {
                 "n_start".to_string(),
                 StoryNode {
                     id: "n_start".to_string(),
-                    content: NodeContent {
-                        text: "...".to_string(),
-                        notes: None,
-                    },
+                    content: "...".to_string(),
                     ending_key: None,
+                    level: None,
                     characters: Some(vec!["玩家".to_string()]),
                     choices: vec![],
                 },
@@ -463,7 +453,7 @@ mod tests {
                 crate::types::Character {
                     id: "c1".to_string(),
                     name: "玩家".to_string(),
-                    gender: Some("Male".to_string()),
+                    gender: "Male".to_string(),
                     age: 28,
                     role: "".to_string(),
                     background: "".to_string(),
@@ -504,7 +494,6 @@ mod tests {
                     gender: "Male".to_string(),
                     is_main: true,
                 }]),
-                goal: None,
                 min_nodes: None,
                 max_nodes: None,
                 min_endings: None,
@@ -514,9 +503,10 @@ mod tests {
                 size: None,
                 api_key: None,
                 base_url: None,
+                model: None,
             };
 
-            crate::template::enforce_request_character_consistency(&mut template, &req);
+            crate::template::enforce_character_consistency(&mut template, req.characters.clone());
 
             let start = template.nodes.get("n_start").unwrap();
             let chars = start.characters.as_ref().unwrap();
@@ -555,7 +545,7 @@ mod tests {
                 crate::types::Character {
                     id: "c_1".to_string(),
                     name: "SomeoneElse".to_string(),
-                    gender: None,
+                    gender: "".to_string(),
                     age: 20,
                     role: "Supporting".to_string(),
                     background: "".to_string(),
@@ -576,7 +566,6 @@ mod tests {
                 synopsis: None,
                 genre: None,
                 characters: Some(req_chars.clone()),
-                goal: None,
                 min_nodes: None,
                 max_nodes: None,
                 min_endings: None,
@@ -586,9 +575,10 @@ mod tests {
                 size: None,
                 api_key: None,
                 base_url: None,
+                model: None,
             };
 
-            crate::template::ensure_request_characters_present(&mut template, &req);
+            crate::template::enforce_character_consistency(&mut template, req.characters.clone());
             assert!(template.characters.values().any(|c| c.name == "Alice"));
 
             crate::images::ensure_avatar_fallbacks(&mut template, Some(&req_chars));
@@ -614,11 +604,9 @@ mod tests {
                 "n_start".to_string(),
                 StoryNode {
                     id: "n_start".to_string(),
-                    content: NodeContent {
-                        text: "start".to_string(),
-                        notes: None,
-                    },
+                    content: "start".to_string(),
                     ending_key: None,
+                    level: None,
                     characters: None,
                     choices: vec![Choice {
                         text: "to 02".to_string(),
@@ -631,11 +619,9 @@ mod tests {
                 "n_02".to_string(),
                 StoryNode {
                     id: "n_02".to_string(),
-                    content: NodeContent {
-                        text: "two".to_string(),
-                        notes: None,
-                    },
+                    content: "two".to_string(),
                     ending_key: None,
+                    level: None,
                     characters: None,
                     choices: vec![
                         Choice {
@@ -701,11 +687,9 @@ mod tests {
                 "n_start".to_string(),
                 StoryNode {
                     id: "n_start".to_string(),
-                    content: NodeContent {
-                        text: "start".to_string(),
-                        notes: None,
-                    },
+                    content: "start".to_string(),
                     ending_key: None,
+                    level: None,
                     characters: None,
                     choices: vec![Choice {
                         text: "go".to_string(),
@@ -760,11 +744,9 @@ mod tests {
                 "n_start".to_string(),
                 StoryNode {
                     id: "n_start".to_string(),
-                    content: NodeContent {
-                        text: "start".to_string(),
-                        notes: None,
-                    },
+                    content: "start".to_string(),
                     ending_key: None,
+                    level: None,
                     characters: None,
                     choices: vec![Choice {
                         text: "go".to_string(),
@@ -777,11 +759,9 @@ mod tests {
                 "n_02".to_string(),
                 StoryNode {
                     id: "n_02".to_string(),
-                    content: NodeContent {
-                        text: "dup".to_string(),
-                        notes: None,
-                    },
+                    content: "dup".to_string(),
                     ending_key: None,
+                    level: None,
                     characters: None,
                     choices: vec![Choice {
                         text: "end".to_string(),
@@ -794,11 +774,9 @@ mod tests {
                 "n_03".to_string(),
                 StoryNode {
                     id: "n_03".to_string(),
-                    content: NodeContent {
-                        text: "dup".to_string(),
-                        notes: None,
-                    },
+                    content: "dup".to_string(),
                     ending_key: Some("ending_good".to_string()),
+                    level: None,
                     characters: None,
                     choices: vec![Choice {
                         text: "end".to_string(),
@@ -866,7 +844,7 @@ mod tests {
                 crate::types::Character {
                     id: "c_1".to_string(),
                     name: "Alice".to_string(),
-                    gender: Some("Female".to_string()),
+                    gender: "Female".to_string(),
                     age: 20,
                     role: "Protagonist".to_string(),
                     background: "".to_string(),
@@ -916,7 +894,7 @@ mod tests {
                 crate::types::Character {
                     id: "c_1".to_string(),
                     name: "Alice".to_string(),
-                    gender: Some("Female".to_string()),
+                    gender: "Female".to_string(),
                     age: 20,
                     role: "Protagonist".to_string(),
                     background: "".to_string(),

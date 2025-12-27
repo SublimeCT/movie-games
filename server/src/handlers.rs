@@ -1,7 +1,7 @@
 use axum::{
     extract::{ConnectInfo, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::Serialize;
@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::api_types::{
     CharacterInput, ExpandCharacterRequest, ExpandWorldviewRequest, GenerateRequest,
 };
-use crate::db::{begin_glm_request_log, finish_glm_request_log, AppState};
+use crate::db::{begin_glm_request_log, finish_glm_request_log, AppState, DbError};
 use crate::glm;
 use crate::images::{
     ensure_avatar_fallbacks, fallback_background_data_uri, generate_scene_background_base64,
@@ -22,12 +22,87 @@ use crate::images::{
 };
 use crate::prompt::{clean_json, construct_prompt};
 use crate::template::{
-    convert_lite_to_full, enforce_request_character_consistency, ensure_minimum_game_graph,
-    ensure_request_characters_present, fallback_template_lite, normalize_character_ids,
-    normalize_template_endings, normalize_template_nodes, sanitize_template_graph,
-    MovieTemplateLite,
+    convert_lite_to_full, normalize_character_ids, normalize_template_endings,
+    normalize_template_nodes, sanitize_template_graph, MovieTemplateLite,
 };
-use crate::types::MovieTemplate;
+
+// ===== 统一响应格式 =====
+
+// 成功时 code = "0"
+pub const CODE_SUCCESS: &str = "0";
+// 通用错误
+// pub const CODE_ERROR: &str = "1";
+// API 限流 / 请求过多
+pub const CODE_TOO_MANY_REQUESTS: &str = "TOO_MANY_REQUESTS";
+// 参数错误
+pub const CODE_BAD_REQUEST: &str = "BAD_REQUEST";
+// 内部错误
+pub const CODE_INTERNAL_ERROR: &str = "INTERNAL_ERROR";
+// 无效的 baseUrl
+pub const CODE_INVALID_BASE_URL: &str = "INVALID_BASE_URL";
+
+/// 统一 API 响应格式
+#[derive(Serialize)]
+pub(crate) struct ApiResponse<T> {
+    pub(crate) code: String,
+    pub(crate) msg: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) data: Option<T>,
+}
+
+impl<T> ApiResponse<T> {
+    pub(crate) fn success(data: T) -> Self {
+        Self {
+            code: CODE_SUCCESS.to_string(),
+            msg: "success".to_string(),
+            data: Some(data),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn error(code: impl Into<String>, msg: impl Into<String>) -> ApiResponse<()> {
+        ApiResponse {
+            code: code.into(),
+            msg: msg.into(),
+            data: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn error_with_data(code: impl Into<String>, msg: impl Into<String>, data: T) -> ApiResponse<T> {
+        ApiResponse {
+            code: code.into(),
+            msg: msg.into(),
+            data: Some(data),
+        }
+    }
+}
+
+fn success_response<T: Serialize>(data: T) -> Json<ApiResponse<T>> {
+    Json(ApiResponse::success(data))
+}
+
+fn error_response(code: impl Into<String>, msg: impl Into<String>) -> (StatusCode, Json<ApiResponse<()>>) {
+    let code_str = code.into();
+    let status = match code_str.as_str() {
+        CODE_TOO_MANY_REQUESTS => StatusCode::TOO_MANY_REQUESTS,
+        CODE_BAD_REQUEST | CODE_INVALID_BASE_URL => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, Json(ApiResponse {
+        code: code_str,
+        msg: msg.into(),
+        data: None,
+    }))
+}
+
+fn db_error_response(e: DbError) -> (StatusCode, Json<ApiResponse<()>>) {
+    error_response(e.code(), e.message())
+}
+
+fn rate_limit_response(msg: impl Into<String>) -> (StatusCode, Json<ApiResponse<()>>) {
+    error_response(CODE_TOO_MANY_REQUESTS, msg)
+}
 
 struct GlmRequestGuard {
     db: PgPool,
@@ -117,18 +192,10 @@ pub(crate) async fn hello() -> &'static str {
     "Hello from Axum!"
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct GeneratePromptResponse {
-    prompt: String,
-}
-
 pub(crate) async fn generate_prompt(
     Json(payload): Json<GenerateRequest>,
-) -> Json<GeneratePromptResponse> {
-    Json(GeneratePromptResponse {
-        prompt: construct_prompt(&payload),
-    })
+) -> Json<ApiResponse<String>> {
+    success_response(construct_prompt(&payload))
 }
 
 pub(crate) async fn generate(
@@ -136,7 +203,7 @@ pub(crate) async fn generate(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(payload): Json<GenerateRequest>,
-) -> Result<Json<MovieTemplate>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Response, Response> {
     let client_ip = headers
         .get("x-real-ip")
         .and_then(|v| v.to_str().ok())
@@ -173,12 +240,7 @@ pub(crate) async fn generate(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(240))
         .build()
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
-            )
-        })?;
+        .map_err(|e| error_response(CODE_INTERNAL_ERROR, e.to_string()).into_response())?;
 
     let mut messages = vec![];
     messages.push(json!({
@@ -229,7 +291,8 @@ pub(crate) async fn generate(
             .unwrap_or(""),
         using_override_key,
     )
-    .await?;
+    .await
+    .map_err(|e| db_error_response(e).into_response())?;
 
     let guard = GlmRequestGuard::new(state.db.clone(), request_id);
 
@@ -247,10 +310,7 @@ pub(crate) async fn generate(
                 Some(response_time_ms),
             )
             .await;
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "Invalid baseUrl", "code": "INVALID_BASE_URL" })),
-            ));
+            return Err(error_response(CODE_INVALID_BASE_URL, "Invalid baseUrl").into_response());
         }
     };
 
@@ -268,10 +328,7 @@ pub(crate) async fn generate(
                 Some(response_time_ms),
             )
             .await;
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "Missing GLM API Key" })),
-            ));
+            return Err(error_response("API_KEY_REQUIRED", "API Key is required. Please configure your own API Key in settings.").into_response());
         }
     };
 
@@ -295,10 +352,7 @@ pub(crate) async fn generate(
                 None,
             )
             .await;
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "GLM Request failed" })),
-            ));
+            return Err(error_response(CODE_INTERNAL_ERROR, "GLM Request failed").into_response());
         }
     };
 
@@ -310,6 +364,28 @@ pub(crate) async fn generate(
         eprintln!("GLM Error: {}", error_text);
         let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
 
+        // Check for GLM error code 1305 (rate limit)
+        if glm::is_rate_limit_error(&error_text) {
+            let error_message = if let Some(code) = glm::extract_glm_error_code(&error_text) {
+                format!("GLM API 返回错误码 {}: {}", code, error_text)
+            } else {
+                format!("{}", error_text)
+            };
+
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "error",
+                None,
+                Some(&error_text),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(rate_limit_response(error_message).into_response());
+        }
+
+        // Fallback: check for "limit" keyword in error text
         if glm::contains_limit(&error_text) {
             guard.consume();
             finish_glm_request_log(
@@ -317,14 +393,11 @@ pub(crate) async fn generate(
                 request_id,
                 "error",
                 None,
-                Some(glm::GLM_LIMIT_FRIENDLY_MESSAGE),
+                Some(&error_text),
                 Some(response_time_ms),
             )
             .await;
-            return Err((
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(json!({ "error": glm::GLM_LIMIT_FRIENDLY_MESSAGE })),
-            ));
+            return Err(rate_limit_response(&error_text).into_response());
         }
 
         guard.consume();
@@ -338,30 +411,77 @@ pub(crate) async fn generate(
         )
         .await;
 
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "GLM Error" })),
-        ));
+        return Err(error_response(CODE_INTERNAL_ERROR, error_text).into_response());
     }
 
-    let response_json: serde_json::Value = match response.json().await {
+    let text_response = response
+        .text()
+        .await
+        .map_err(|e| {
+             // Cannot use guard here as we are returning Err, but we can't consume guard and return err easily without scope
+             // Actually we can just log failure and return
+             // We'll let the guard drop handle the "cancel" status if read fails, or we can manually log failure.
+             // But guard.consume() takes ownership.
+             // It is better to let guard handle "cancel" if read fails, or log it as internal error.
+             error_response(CODE_INTERNAL_ERROR, format!("Failed to read response body: {}", e)).into_response()
+        })?;
+
+    // Try to parse as generic JSON first to check for "error" field
+    // (GLM sometimes returns 200 OK with "error" in body)
+    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text_response) {
+        if json_value.get("error").is_some() {
+            println!("GLM returned 200 OK but with error body: {}", text_response);
+            let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
+
+            if glm::is_rate_limit_error(&text_response) {
+                let error_message = if let Some(code) = glm::extract_glm_error_code(&text_response) {
+                    format!("GLM API 返回错误码 {}: {}", code, text_response)
+                } else {
+                    text_response.clone()
+                };
+
+                guard.consume();
+                finish_glm_request_log(
+                    &state.db,
+                    request_id,
+                    "error",
+                    None,
+                    Some(&text_response),
+                    Some(response_time_ms),
+                )
+                .await;
+                return Err(rate_limit_response(error_message).into_response());
+            }
+
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "error",
+                None,
+                Some(&text_response),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(error_response(CODE_INTERNAL_ERROR, text_response).into_response());
+        }
+    }
+
+    let response_json: serde_json::Value = match serde_json::from_str(&text_response) {
         Ok(v) => v,
-        Err(_) => {
+        Err(e) => {
             let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
             guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,
                 "failed",
-                None,
-                Some("Failed to parse GLM response"),
+                Some(&text_response), // Log the raw text that failed parsing
+                Some(&format!("Failed to parse GLM response JSON: {}", e)),
                 Some(response_time_ms),
             )
             .await;
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "Failed to parse GLM response" })),
-            ));
+            return Err(error_response(CODE_INTERNAL_ERROR, "Failed to parse GLM response").into_response());
         }
     };
 
@@ -385,10 +505,7 @@ pub(crate) async fn generate(
                 Some(response_time_ms),
             )
             .await;
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "Invalid GLM response" })),
-            ));
+            return Err(error_response(CODE_INTERNAL_ERROR, "Invalid GLM response structure").into_response());
         }
     };
 
@@ -397,7 +514,6 @@ pub(crate) async fn generate(
     let clean_json_str = clean_json(content);
     let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
 
-    let mut parse_error: Option<String> = None;
     let template_lite: MovieTemplateLite = match serde_json::from_str(&clean_json_str) {
         Ok(t) => {
             println!("JSON deserialization successful. Converting to full template.");
@@ -405,9 +521,18 @@ pub(crate) async fn generate(
         }
         Err(e) => {
             eprintln!("JSON Error: {}", e);
-            parse_error = Some(format!("Parse Error: {}", e));
-            println!("Returning fallback template due to JSON error.");
-            fallback_template_lite("Error generating story")
+            let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "failed",
+                Some(content),
+                Some(&format!("JSON Parse Error: {}", e)),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(error_response(CODE_INTERNAL_ERROR, format!("JSON Parse Error: {}", e)).into_response());
         }
     };
 
@@ -416,28 +541,16 @@ pub(crate) async fn generate(
     normalize_character_ids(&mut template);
     normalize_template_nodes(&mut template);
     normalize_template_endings(&mut template);
+
+    // Only ensure minimum graph if GLM returned nothing - never overwrite GLM's data
+    // ensure_minimum_game_graph call removed to prevent write-dead data injection
+
+    // NO character modifications - preserve GLM's original output
+    // ensure_request_characters_present(&mut template, &payload);
     
-    // Force overwrite characters with frontend input if provided
-    if let Some(chars) = &payload.characters {
-        if !chars.is_empty() {
-             template.characters.clear();
-             for c in chars {
-                 template.characters.insert(c.name.clone(), crate::types::Character {
-                     id: c.name.clone(),
-                     name: c.name.clone(),
-                     gender: c.gender.clone(),
-                     age: 20,
-                     role: if c.is_main { "Protagonist".to_string() } else { "Supporting".to_string() },
-                     background: c.description.clone(),
-                     avatar_path: None,
-                 });
-             }
-        }
-    }
-    
-    ensure_minimum_game_graph(&mut template, language_tag, payload.characters.clone());
-    ensure_request_characters_present(&mut template, &payload);
-    enforce_request_character_consistency(&mut template, &payload);
+    // User insisted: "Must return character info passed by frontend exactly as is"
+    crate::template::enforce_character_consistency(&mut template, payload.characters.clone());
+
     normalize_character_ids(&mut template);
     normalize_template_endings(&mut template);
     sanitize_template_graph(&mut template);
@@ -495,17 +608,12 @@ pub(crate) async fn generate(
         request_id,
         "success",
         Some(content),
-        parse_error.as_deref(),
+        None,
         Some(response_time_ms),
     )
     .await;
 
-    Ok(Json(template))
-}
-
-#[derive(Serialize)]
-struct ExpandWorldviewResponse {
-    worldview: String,
+    Ok(success_response(template).into_response())
 }
 
 pub(crate) async fn expand_worldview(
@@ -513,7 +621,7 @@ pub(crate) async fn expand_worldview(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(req): Json<ExpandWorldviewRequest>,
-) -> impl IntoResponse {
+) -> Result<Response, Response> {
     let client_ip = headers
         .get("x-real-ip")
         .and_then(|v| v.to_str().ok())
@@ -560,7 +668,13 @@ pub(crate) async fn expand_worldview(
         obj.remove("apiKey");
     }
 
-    let request_id = match begin_glm_request_log(
+    // Initialize Client
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(240))
+        .build()
+        .map_err(|e| error_response(CODE_INTERNAL_ERROR, e.to_string()).into_response())?;
+
+    let request_id = begin_glm_request_log(
         &state.db,
         &client_ip,
         user_agent,
@@ -570,73 +684,248 @@ pub(crate) async fn expand_worldview(
         using_override_key,
     )
     .await
-    {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
+    .map_err(|e| db_error_response(e).into_response())?;
 
     let guard = GlmRequestGuard::new(state.db.clone(), request_id);
 
-    let start = std::time::Instant::now();
-    match glm::call_glm_with_api_key(prompt, false, req.api_key.clone(), req.base_url.clone(), req.model.clone()).await
-    {
-        Ok(text) => {
+    let endpoint = match resolve_glm_endpoint(req.base_url.as_deref()) {
+        Ok(v) => v,
+        Err(_) => {
+            let start = std::time::Instant::now();
             let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
             guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,
-                "success",
-                Some(&text),
+                "failed",
                 None,
+                Some("Invalid baseUrl"),
                 Some(response_time_ms),
             )
             .await;
-            Json(ExpandWorldviewResponse { worldview: text }).into_response()
+            return Err(error_response(CODE_INVALID_BASE_URL, "Invalid baseUrl").into_response());
         }
-        Err(e) => {
-            let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-            if e == "Invalid baseUrl" {
-                guard.consume();
-                finish_glm_request_log(
-                    &state.db,
-                    request_id,
-                    "error",
-                    None,
-                    Some(&e),
-                    Some(response_time_ms),
-                )
-                .await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "Invalid baseUrl", "code": "INVALID_BASE_URL" })),
-                )
-                    .into_response();
-            }
+    };
 
-            let status = if e == glm::GLM_LIMIT_FRIENDLY_MESSAGE {
-                StatusCode::TOO_MANY_REQUESTS
+    let api_key = match resolve_glm_api_key(req.api_key.as_deref()) {
+        Ok(v) => v,
+        Err(_) => {
+            let start = std::time::Instant::now();
+            let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "failed",
+                None,
+                Some("Missing GLM API Key"),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(error_response("API_KEY_REQUIRED", "API Key is required").into_response());
+        }
+    };
+
+    let model = if using_override_key {
+        req.model.as_deref().unwrap_or("glm-4.6v-flash")
+    } else {
+        "glm-4.6v-flash"
+    };
+
+    let messages = vec![
+        json!({
+            "role": "system",
+            "content": "You are a professional interactive movie scriptwriter and game designer."
+        }),
+        json!({
+            "role": "user",
+            "content": prompt
+        })
+    ];
+
+    let request_body = json!({
+        "model": model,
+        "messages": messages,
+        // expand_worldview does NOT force JSON object in original call (json_mode: false)
+        // "response_format": { "type": "json_object" }, 
+        "temperature": 1,
+        "top_p": 0.95,
+        "max_tokens": 4096 // Adjusted reasonable limit for text expansion
+    });
+
+    let start = std::time::Instant::now();
+    let response = match client
+        .post(&endpoint)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(&request_body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("GLM Request failed: {}", e);
+            let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "failed",
+                None,
+                Some("GLM Request failed"),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(error_response(CODE_INTERNAL_ERROR, "GLM Request failed").into_response());
+        }
+    };
+
+    let duration = start.elapsed();
+    let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        eprintln!("GLM Error: {}", error_text);
+
+        if glm::is_rate_limit_error(&error_text) {
+            let error_message = if let Some(code) = glm::extract_glm_error_code(&error_text) {
+                format!("GLM API 返回错误码 {}: {}", code, error_text)
             } else {
-                StatusCode::INTERNAL_SERVER_ERROR
+                format!("{}", error_text)
             };
+
             guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,
                 "error",
                 None,
-                Some(&e),
+                Some(&error_text),
                 Some(response_time_ms),
             )
             .await;
-            (status, Json(json!({ "error": e }))).into_response()
+            return Err(rate_limit_response(error_message).into_response());
+        }
+
+        if glm::contains_limit(&error_text) {
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "error",
+                None,
+                Some(&error_text),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(rate_limit_response(&error_text).into_response());
+        }
+
+        guard.consume();
+        finish_glm_request_log(
+            &state.db,
+            request_id,
+            "error",
+            None,
+            Some(&error_text),
+            Some(response_time_ms),
+        )
+        .await;
+        return Err(error_response(CODE_INTERNAL_ERROR, error_text).into_response());
+    }
+
+    let text_response = response
+        .text()
+        .await
+        .map_err(|e| {
+             error_response(CODE_INTERNAL_ERROR, format!("Failed to read response body: {}", e)).into_response()
+        })?;
+
+    // Check for 200 OK error
+    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text_response) {
+        if json_value.get("error").is_some() {
+            println!("GLM returned 200 OK but with error body: {}", text_response);
+            
+            if glm::is_rate_limit_error(&text_response) {
+                let error_message = if let Some(code) = glm::extract_glm_error_code(&text_response) {
+                    format!("GLM API 返回错误码 {}: {}", code, text_response)
+                } else {
+                    text_response.clone()
+                };
+
+                guard.consume();
+                finish_glm_request_log(
+                    &state.db,
+                    request_id,
+                    "error",
+                    None,
+                    Some(&text_response),
+                    Some(response_time_ms),
+                )
+                .await;
+                return Err(rate_limit_response(error_message).into_response());
+            }
+
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "error",
+                None,
+                Some(&text_response),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(error_response(CODE_INTERNAL_ERROR, text_response).into_response());
         }
     }
-}
 
-#[derive(Serialize)]
-struct ExpandCharacterResponse {
-    characters: Vec<CharacterInput>,
+    // Extract content from chat response
+    let response_json: serde_json::Value = match serde_json::from_str(&text_response) {
+        Ok(v) => v,
+        Err(e) => {
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "failed",
+                Some(&text_response),
+                Some(&format!("Failed to parse GLM response JSON: {}", e)),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(error_response(CODE_INTERNAL_ERROR, "Failed to parse GLM response").into_response());
+        }
+    };
+
+    let content = match response_json["choices"][0]["message"]["content"].as_str() {
+        Some(c) => c.to_string(),
+        None => {
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "failed",
+                None,
+                Some("Invalid GLM response structure"),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(error_response(CODE_INTERNAL_ERROR, "Invalid GLM response structure").into_response());
+        }
+    };
+
+    guard.consume();
+    finish_glm_request_log(
+        &state.db,
+        request_id,
+        "success",
+        Some(&content),
+        None,
+        Some(response_time_ms),
+    )
+    .await;
+
+    Ok(success_response(content).into_response())
 }
 
 pub(crate) async fn expand_character(
@@ -644,7 +933,7 @@ pub(crate) async fn expand_character(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(req): Json<ExpandCharacterRequest>,
-) -> impl IntoResponse {
+) -> Result<Response, Response> {
     let client_ip = headers
         .get("x-real-ip")
         .and_then(|v| v.to_str().ok())
@@ -749,7 +1038,13 @@ pub(crate) async fn expand_character(
         obj.remove("apiKey");
     }
 
-    let request_id = match begin_glm_request_log(
+    // Initialize Client
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(240))
+        .build()
+        .map_err(|e| error_response(CODE_INTERNAL_ERROR, e.to_string()).into_response())?;
+
+    let request_id = begin_glm_request_log(
         &state.db,
         &client_ip,
         user_agent,
@@ -759,95 +1054,262 @@ pub(crate) async fn expand_character(
         using_override_key,
     )
     .await
-    {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
+    .map_err(|e| db_error_response(e).into_response())?;
 
     let guard = GlmRequestGuard::new(state.db.clone(), request_id);
 
-    let start = std::time::Instant::now();
-    let (base_url_arg, model_arg) = if using_override_key {
-        (req.base_url.clone(), req.model.clone())
-    } else {
-        (None, None)
-    };
-
-    match glm::call_glm_with_api_key(prompt, true, req.api_key.clone(), base_url_arg, model_arg).await
-    {
-        Ok(json_str) => {
-            let clean = clean_json(&json_str);
-            match serde_json::from_str::<Vec<CharacterInput>>(&clean) {
-                Ok(chars) => {
-                    let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-                    guard.consume();
-                    finish_glm_request_log(
-                        &state.db,
-                        request_id,
-                        "success",
-                        Some(&clean),
-                        None,
-                        Some(response_time_ms),
-                    )
-                    .await;
-                    Json(ExpandCharacterResponse { characters: chars }).into_response()
-                }
-                Err(e) => {
-                    let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-                    guard.consume();
-                    finish_glm_request_log(
-                        &state.db,
-                        request_id,
-                        "failed",
-                        None,
-                        Some(&format!("Parse Error: {}", e)),
-                        Some(response_time_ms),
-                    )
-                    .await;
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Parse Error: {}", e),
-                    )
-                    .into_response()
-                }
-            }
-        }
-        Err(e) => {
+    let endpoint = match resolve_glm_endpoint(req.base_url.as_deref()) {
+        Ok(v) => v,
+        Err(_) => {
+            let start = std::time::Instant::now();
             let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-            if e == "Invalid baseUrl" {
-                guard.consume();
-                finish_glm_request_log(
-                    &state.db,
-                    request_id,
-                    "failed",
-                    None,
-                    Some(&e),
-                    Some(response_time_ms),
-                )
-                .await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "Invalid baseUrl", "code": "INVALID_BASE_URL" })),
-                )
-                    .into_response();
-            }
-
-            let status = if e == glm::GLM_LIMIT_FRIENDLY_MESSAGE {
-                StatusCode::TOO_MANY_REQUESTS
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
             guard.consume();
             finish_glm_request_log(
                 &state.db,
                 request_id,
                 "failed",
                 None,
-                Some(&e),
+                Some("Invalid baseUrl"),
                 Some(response_time_ms),
             )
             .await;
-            (status, Json(json!({ "error": e }))).into_response()
+            return Err(error_response(CODE_INVALID_BASE_URL, "Invalid baseUrl").into_response());
+        }
+    };
+
+    let api_key = match resolve_glm_api_key(req.api_key.as_deref()) {
+        Ok(v) => v,
+        Err(_) => {
+            let start = std::time::Instant::now();
+            let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "failed",
+                None,
+                Some("Missing GLM API Key"),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(error_response("API_KEY_REQUIRED", "API Key is required").into_response());
+        }
+    };
+
+    let model = if using_override_key {
+        req.model.as_deref().unwrap_or("glm-4.6v-flash")
+    } else {
+        "glm-4.6v-flash"
+    };
+
+    let messages = vec![
+        json!({
+            "role": "system",
+            "content": "You are a professional interactive movie scriptwriter and game designer. Output strictly valid JSON."
+        }),
+        json!({
+            "role": "user",
+            "content": prompt
+        })
+    ];
+
+    let request_body = json!({
+        "model": model,
+        "messages": messages,
+        "response_format": { "type": "json_object" }, // Force JSON for character expansion
+        "temperature": 1,
+        "top_p": 0.95,
+        "max_tokens": 8192
+    });
+
+    let start = std::time::Instant::now();
+    let response = match client
+        .post(&endpoint)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(&request_body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("GLM Request failed: {}", e);
+            let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "failed",
+                None,
+                Some("GLM Request failed"),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(error_response(CODE_INTERNAL_ERROR, "GLM Request failed").into_response());
+        }
+    };
+
+    let duration = start.elapsed();
+    let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        eprintln!("GLM Error: {}", error_text);
+
+        if glm::is_rate_limit_error(&error_text) {
+            let error_message = if let Some(code) = glm::extract_glm_error_code(&error_text) {
+                format!("GLM API 返回错误码 {}: {}", code, error_text)
+            } else {
+                format!("{}", error_text)
+            };
+
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "error",
+                None,
+                Some(&error_text),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(rate_limit_response(error_message).into_response());
+        }
+
+        if glm::contains_limit(&error_text) {
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "error",
+                None,
+                Some(&error_text),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(rate_limit_response(&error_text).into_response());
+        }
+
+        guard.consume();
+        finish_glm_request_log(
+            &state.db,
+            request_id,
+            "error",
+            None,
+            Some(&error_text),
+            Some(response_time_ms),
+        )
+        .await;
+        return Err(error_response(CODE_INTERNAL_ERROR, error_text).into_response());
+    }
+
+    let text_response = response
+        .text()
+        .await
+        .map_err(|e| {
+             error_response(CODE_INTERNAL_ERROR, format!("Failed to read response body: {}", e)).into_response()
+        })?;
+
+    // Check for 200 OK error
+    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text_response) {
+        if json_value.get("error").is_some() {
+            println!("GLM returned 200 OK but with error body: {}", text_response);
+            
+            if glm::is_rate_limit_error(&text_response) {
+                let error_message = if let Some(code) = glm::extract_glm_error_code(&text_response) {
+                    format!("GLM API 返回错误码 {}: {}", code, text_response)
+                } else {
+                    text_response.clone()
+                };
+
+                guard.consume();
+                finish_glm_request_log(
+                    &state.db,
+                    request_id,
+                    "error",
+                    None,
+                    Some(&text_response),
+                    Some(response_time_ms),
+                )
+                .await;
+                return Err(rate_limit_response(error_message).into_response());
+            }
+
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "error",
+                None,
+                Some(&text_response),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(error_response(CODE_INTERNAL_ERROR, text_response).into_response());
+        }
+    }
+
+    // Extract content from chat response
+    let response_json: serde_json::Value = match serde_json::from_str(&text_response) {
+        Ok(v) => v,
+        Err(e) => {
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "failed",
+                Some(&text_response),
+                Some(&format!("Failed to parse GLM response JSON: {}", e)),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(error_response(CODE_INTERNAL_ERROR, "Failed to parse GLM response").into_response());
+        }
+    };
+
+    let content = match response_json["choices"][0]["message"]["content"].as_str() {
+        Some(c) => c,
+        None => {
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "failed",
+                None,
+                Some("Invalid GLM response structure"),
+                Some(response_time_ms),
+            )
+            .await;
+            return Err(error_response(CODE_INTERNAL_ERROR, "Invalid GLM response structure").into_response());
+        }
+    };
+
+    let clean = clean_json(content);
+    match serde_json::from_str::<Vec<CharacterInput>>(&clean) {
+        Ok(chars) => {
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "success",
+                Some(&clean),
+                None,
+                Some(response_time_ms),
+            )
+            .await;
+            Ok(success_response(chars).into_response())
+        }
+        Err(e) => {
+            guard.consume();
+            finish_glm_request_log(
+                &state.db,
+                request_id,
+                "failed",
+                Some(&clean),
+                Some(&format!("Parse Error: {}", e)),
+                Some(response_time_ms),
+            )
+            .await;
+            Err(error_response(CODE_INTERNAL_ERROR, format!("Parse Error: {}", e)).into_response())
         }
     }
 }

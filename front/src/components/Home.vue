@@ -19,14 +19,13 @@ import {
   type CharacterInput,
   expandCharacter,
   expandSynopsis,
-  generateGame,
   generatePrompt,
 } from '../api';
 import type { MovieTemplate } from '../types/movie';
 import CinematicLoader from './ui/CinematicLoader.vue';
 import { FluidCursor } from './ui/fluid-cursor';
 import { WavyBackground } from './ui/wavy-background';
-import { randomThemes, getThemeConfig } from '../data/randomThemes';
+import { randomThemes } from '../data/randomThemes';
 
 const router = useRouter();
 const emit = defineEmits<(e: 'start', data: MovieTemplate) => void>();

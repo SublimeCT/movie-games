@@ -840,6 +840,22 @@ pub(crate) async fn expand_worldview(
              error_response(CODE_INTERNAL_ERROR, format!("Failed to read response body: {}", e)).into_response()
         })?;
 
+    if text_response.trim().is_empty() {
+        eprintln!("GLM returned empty response body");
+        let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
+        guard.consume();
+        finish_glm_request_log(
+            &state.db,
+            request_id,
+            "failed",
+            Some(""),
+            Some("GLM returned empty response body"),
+            Some(response_time_ms),
+        )
+        .await;
+        return Err(error_response(CODE_INTERNAL_ERROR, "GLM returned empty response body").into_response());
+    }
+
     // Check for 200 OK error
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text_response) {
         if json_value.get("error").is_some() {
@@ -1208,6 +1224,22 @@ pub(crate) async fn expand_character(
         .map_err(|e| {
              error_response(CODE_INTERNAL_ERROR, format!("Failed to read response body: {}", e)).into_response()
         })?;
+
+    if text_response.trim().is_empty() {
+        eprintln!("GLM returned empty response body");
+        let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
+        guard.consume();
+        finish_glm_request_log(
+            &state.db,
+            request_id,
+            "failed",
+            Some(""),
+            Some("GLM returned empty response body"),
+            Some(response_time_ms),
+        )
+        .await;
+        return Err(error_response(CODE_INTERNAL_ERROR, "GLM returned empty response body").into_response());
+    }
 
     // Check for 200 OK error
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text_response) {

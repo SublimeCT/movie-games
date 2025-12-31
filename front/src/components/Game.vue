@@ -28,15 +28,15 @@ const gameData = computed(() => localData.value || props.data);
 
 /**
  * Helper to find the start node ID from the data.
- * Checks for 'start', 'n_start', 'root', '1' or defaults to the first key.
+ * Checks for 'start', 'root', '1' or defaults to the first key.
  */
 const startNodeId = computed(() => {
   const data = gameData.value;
   if (!data?.nodes) return '';
   const keys = Object.keys(data.nodes);
   if (keys.length === 0) return '';
+  if (data.nodes['start']) return 'start';
   if (keys.includes('start')) return 'start';
-  if (keys.includes('n_start')) return 'n_start';
   if (keys.includes('root')) return 'root';
   if (keys.includes('1')) return '1';
   return keys[0];
@@ -115,33 +115,6 @@ const checkEnding = (nodeId: string) => {
     emit('end', {
       ...data.endings[nodeId],
       endingKey: nodeId,
-      nodeId,
-      reachedAt: new Date().toISOString(),
-    });
-    return;
-  }
-
-  const endingKey = (node?.endingKey || '').trim();
-  if (endingKey) {
-    const known = data.endings?.[endingKey];
-    if (known) {
-      emit('end', {
-        ...known,
-        endingKey,
-        nodeId,
-        reachedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    emit('end', {
-      type: 'neutral',
-      description:
-        typeof node?.content === 'string'
-          ? node.content
-          : // biome-ignore lint/suspicious/noExplicitAny: Handle legacy object format
-            (node?.content as any)?.text || '故事结束',
-      endingKey,
       nodeId,
       reachedAt: new Date().toISOString(),
     });

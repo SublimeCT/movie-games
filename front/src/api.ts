@@ -85,6 +85,12 @@ export interface CharacterInput {
   isMain: boolean;
 }
 
+
+interface GenerateResponseData {
+  id: string;
+  template: MovieTemplate;
+}
+
 export async function generateGame(
   req: GenerateRequest,
 ): Promise<MovieTemplate> {
@@ -96,7 +102,43 @@ export async function generateGame(
     body: JSON.stringify(req),
   });
 
-  return parseApiResponse<MovieTemplate>(response);
+  const data = await parseApiResponse<any>(response);
+  
+  // New backend format
+  if (data && data.template) {
+    data.template.requestId = data.id;
+    return data.template as MovieTemplate;
+  }
+
+  // Fallback: Old backend format (raw template)
+  if (data && data.projectId) {
+    console.warn('Backend returned raw template, requestId might be missing');
+    return data as MovieTemplate;
+  }
+
+  console.error('Invalid response data:', data);
+  throw new Error('Invalid response format');
+}
+
+export async function shareGame(id: string, shared: boolean): Promise<void> {
+  const response = await fetch(`${API_BASE}/share`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ id, shared }),
+  });
+  await parseApiResponse<void>(response);
+}
+
+export async function getSharedGame(id: string): Promise<MovieTemplate> {
+  const response = await fetch(`${API_BASE}/play/${id}`);
+  const data = await parseApiResponse<MovieTemplate>(response);
+  // Ensure requestId is attached if not present in the stored json
+  if (data && !data.requestId) {
+    data.requestId = id;
+  }
+  return data;
 }
 
 export async function generatePrompt(req: GenerateRequest): Promise<string> {

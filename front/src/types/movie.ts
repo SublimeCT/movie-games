@@ -7,6 +7,9 @@
  * 顶层互动电影模板类型
  */
 export interface MovieTemplate {
+  /** 数据库请求 ID */
+  requestId?: string;
+
   /** 项目 ID，用于唯一标识该互动电影项目 */
   projectId: string;
 
@@ -89,12 +92,6 @@ export interface Character {
 export interface StoryNode {
   /** 节点唯一 ID（与 nodes 的 key 一致） */
   id: string;
-
-  /**
-   * 可选的结局标识。
-   * 若存在且能在顶层 `endings` 中找到对应 key，则进入该节点时应直接跳转结局页。
-   */
-  endingKey?: string;
 
   /** 节点内容（文本） */
   content: string;

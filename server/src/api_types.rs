@@ -1,4 +1,20 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use crate::types::MovieTemplate;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GenerateResponse {
+    pub(crate) id: Uuid,
+    pub(crate) template: MovieTemplate,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ShareRequest {
+    pub(crate) id: Uuid,
+    pub(crate) shared: bool,
+}
 
 #[derive(Deserialize, Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]

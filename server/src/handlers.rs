@@ -1,5 +1,5 @@
 use axum::{
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -13,8 +13,12 @@ use uuid::Uuid;
 
 use crate::api_types::{
     CharacterInput, ExpandCharacterRequest, ExpandWorldviewRequest, GenerateRequest,
+    GenerateResponse, ShareRequest,
 };
-use crate::db::{begin_glm_request_log, finish_glm_request_log, AppState, DbError};
+use crate::db::{
+    begin_glm_request_log, finish_glm_request_log, get_request_owner,
+    record_visit, save_processed_response, set_share_status, AppState, DbError,
+};
 use crate::glm;
 use crate::images::{
     ensure_avatar_fallbacks, fallback_background_data_uri, generate_scene_background_base64,
@@ -87,6 +91,8 @@ fn error_response(code: impl Into<String>, msg: impl Into<String>) -> (StatusCod
     let status = match code_str.as_str() {
         CODE_TOO_MANY_REQUESTS => StatusCode::TOO_MANY_REQUESTS,
         CODE_BAD_REQUEST | CODE_INVALID_BASE_URL => StatusCode::BAD_REQUEST,
+        "FORBIDDEN" => StatusCode::FORBIDDEN,
+        "NOT_FOUND" => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, Json(ApiResponse {
@@ -196,6 +202,98 @@ pub(crate) async fn generate_prompt(
     Json(payload): Json<GenerateRequest>,
 ) -> Json<ApiResponse<String>> {
     success_response(construct_prompt(&payload))
+}
+
+pub(crate) async fn share_game(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(payload): Json<ShareRequest>,
+) -> Result<Json<ApiResponse<()>>, Response> {
+    // 1. Check ownership and status
+    let request_info = get_request_owner(&state.db, payload.id)
+        .await
+        .map_err(|e| {
+            eprintln!("Database error: {}", e);
+            db_error_response(DbError::InternalError).into_response()
+        })?;
+
+    let Some((owner_ip, status)) = request_info else {
+        return Err(error_response("NOT_FOUND", "Game not found").into_response());
+    };
+
+    if status != "success" {
+        return Err(
+            error_response("FORBIDDEN", "Game generation not successful, cannot share").into_response(),
+        );
+    }
+
+    // Simple IP check. In production behind proxy, check X-Forwarded-For headers.
+    // For this environment, we assume direct connection or consistent IP handling.
+    // Convert IPv6 mapped IPv4 to standard IPv4 if necessary for string comparison
+    // but here we just use string equality.
+    let request_ip = addr.ip().to_string();
+
+    // Allow localhost/loopback matching easily
+    let is_owner = owner_ip == request_ip || (owner_ip == "127.0.0.1" && request_ip == "::1");
+
+    if !is_owner {
+        // If strictly required as per user instruction:
+        // "backend must verify data's ip must match current user, otherwise return 403"
+        return Err(
+            error_response("FORBIDDEN", "You are not the owner of this game").into_response(),
+        );
+    }
+
+    // 2. Update status
+    set_share_status(&state.db, payload.id, payload.shared)
+        .await
+        .map_err(|e| {
+            eprintln!("Database error: {}", e);
+            db_error_response(DbError::InternalError).into_response()
+        })?;
+
+    Ok(success_response(()))
+}
+
+pub(crate) async fn get_shared_game(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<serde_json::Value>>, Response> {
+    // 1. Get game data if shared
+    let data = crate::db::get_shared_game(&state.db, id)
+        .await
+        .map_err(|e| {
+            eprintln!("Database error: {}", e);
+            db_error_response(DbError::InternalError).into_response()
+        })?;
+
+    let Some(data) = data else {
+        // Not found or not shared
+        return Err(error_response("NOT_FOUND", "Game not found or not shared").into_response());
+    };
+
+    // 2. Record visit (async, fire and forget)
+    let db = state.db.clone();
+    let client_ip = addr.ip().to_string();
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let referer = headers
+        .get("referer")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string());
+
+    tokio::spawn(async move {
+        if let Err(e) = record_visit(&db, id, &client_ip, &user_agent, referer.as_deref()).await {
+            eprintln!("Failed to record visit: {}", e);
+        }
+    });
+
+    Ok(success_response(data))
 }
 
 pub(crate) async fn generate(
@@ -602,6 +700,11 @@ pub(crate) async fn generate(
 
     ensure_avatar_fallbacks(&mut template, payload.characters.as_ref());
 
+    // Save the processed template
+    if let Err(e) = save_processed_response(&state.db, request_id, &serde_json::to_value(&template).unwrap_or(json!({}))).await {
+        eprintln!("Failed to save processed response: {}", e);
+    }
+
     guard.consume();
     finish_glm_request_log(
         &state.db,
@@ -613,7 +716,10 @@ pub(crate) async fn generate(
     )
     .await;
 
-    Ok(success_response(template).into_response())
+    Ok(success_response(GenerateResponse {
+        id: request_id,
+        template,
+    }).into_response())
 }
 
 pub(crate) async fn expand_worldview(

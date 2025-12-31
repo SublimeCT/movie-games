@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { X } from 'lucide-vue-next';
+import { X, Download, FileJson, Share2, Globe, Link as LinkIcon, Lock } from 'lucide-vue-next';
 import type { Ending, MovieTemplate, StoryNode } from '../types/movie';
+import { shareGame } from '../api';
 
 const props = defineProps<{
   data?: MovieTemplate | null;
@@ -12,6 +13,48 @@ const emit = defineEmits<{
   (e: 'restartPlay'): void;
   (e: 'remake'): void;
 }>();
+
+const isShared = ref(false);
+const shareLoading = ref(false);
+const showShareModal = ref(false);
+
+const shareLink = computed(() => {
+  if (!props.data?.requestId) return '';
+  return `${window.location.origin}/play/${props.data.requestId}`;
+});
+
+const handleShare = async () => {
+  if (!props.data?.requestId) {
+    alert('此数据为本地导入或旧版数据，不支持在线分享');
+    return;
+  }
+  
+  shareLoading.value = true;
+  try {
+    const nextState = !isShared.value;
+    await shareGame(props.data.requestId, nextState);
+    isShared.value = nextState;
+    if (nextState) {
+      showShareModal.value = true;
+    }
+  } catch (e) {
+    console.error('Share failed:', e);
+    // @ts-ignore
+    const msg = e.message || '分享状态更新失败';
+    alert(msg);
+  } finally {
+    shareLoading.value = false;
+  }
+};
+
+const copyShareLink = async () => {
+  try {
+    await navigator.clipboard.writeText(shareLink.value);
+    alert('链接已复制到剪贴板');
+  } catch (e) {
+    console.error('Copy failed:', e);
+  }
+};
 
 const resolvedEnding = computed<Ending>(
   () =>
@@ -39,13 +82,9 @@ const stats = computed(() => {
 
 const endingDetails = computed(() => {
   const ending = resolvedEnding.value;
-  const endingKey = (ending.endingKey || '').trim();
-  const fromMap = endingKey ? props.data?.endings?.[endingKey] : undefined;
   return {
-    endingKey: endingKey || undefined,
     nodeId: (ending.nodeId || '').trim() || undefined,
     reachedAt: (ending.reachedAt || '').trim() || undefined,
-    fromMap,
   };
 });
 
@@ -166,7 +205,6 @@ const startNodeId = computed(() => {
   const keys = Object.keys(nodes);
   if (keys.length === 0) return '';
   if (keys.includes('start')) return 'start';
-  if (keys.includes('n_start')) return 'n_start';
   if (keys.includes('root')) return 'root';
   if (keys.includes('1')) return '1';
   return keys[0];
@@ -189,10 +227,7 @@ const treeGraph = computed(() => {
 
   for (const [id, n] of Object.entries(nodes)) {
     const list: { to: string; label?: string }[] = [];
-    const endingKey = (n.endingKey || '').trim();
-    if (endingKey && knownEndingKeys.has(endingKey)) {
-      list.push({ to: endingKey, label: 'ending' });
-    }
+    
     const seenTargets = new Set<string>();
     for (const c of n.choices || []) {
       const to = (c.nextNodeId || '').trim();
@@ -350,9 +385,7 @@ const dragging = ref<null | {
 }>(null);
 
 const endingFocusId = computed(() => {
-  if (endingDetails.value.endingKey) return endingDetails.value.endingKey;
-  if (endingDetails.value.nodeId) return endingDetails.value.nodeId;
-  return '';
+  return endingDetails.value.nodeId || '';
 });
 
 const highlighted = computed(() => {
@@ -531,17 +564,49 @@ const selectedNodeInfo = computed(() => {
         ? n.content
         : // biome-ignore lint/suspicious/noExplicitAny: Handle legacy object format
           (n.content as any)?.text || '',
-    endingKey: (n.endingKey || '').trim() || undefined,
     characters: n.characters || [],
     choices: (n.choices || []).map((c) => ({ text: c.text, to: c.nextNodeId })),
   };
 });
+
+/**
+ * Controls the visibility of the JSON export modal.
+ */
+const showJsonModal = ref(false);
+
+/**
+ * Computes the JSON string representation of the full game data.
+ * Used for export and display in the modal.
+ * @returns {string} Formatted JSON string
+ */
+const jsonContent = computed(() => {
+  // 导出完整剧情信息，可以直接在主页导入
+  if (!props.data) return '{}';
+  // 确保包含所有必要字段，特别是 requestId（如果有）
+  // 深拷贝以避免副作用，虽然 JSON.stringify 本身不会修改原对象
+  const dataToExport = { ...props.data };
+  return JSON.stringify(dataToExport, null, 2);
+});
+
+/**
+ * Trigger the download of the full game data as a JSON file.
+ * Creates a Blob and programmatically clicks a download link.
+ */
+const downloadJson = () => {
+  const blob = new Blob([jsonContent.value], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `movie-game-${props.data?.title || 'export'}-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
 </script>
 
 <template>
   <div class="relative h-screen w-full overflow-hidden bg-black text-white">
-    <canvas ref="bgCanvasEl" class="absolute inset-0 h-full w-full"></canvas>
-    <div class="absolute inset-0 bg-gradient-to-b from-black/15 via-black/55 to-black"></div>
+    <canvas ref="bgCanvasEl" class="absolute inset-0 h-full w-full pointer-events-none"></canvas>
+    <div class="absolute inset-0 bg-gradient-to-b from-black/15 via-black/55 to-black pointer-events-none"></div>
 
     <div class="relative z-10 h-full w-full overflow-y-auto px-6 md:px-10 py-10">
       <div class="w-full">
@@ -559,18 +624,52 @@ const selectedNodeInfo = computed(() => {
               </div>
             </div>
 
-            <div class="flex gap-3">
+            <div class="flex flex-col md:flex-row items-stretch md:items-center gap-3 md:gap-4 mt-8 w-full md:w-auto">
               <button
                 @click="emit('restartPlay')"
-                class="relative inline-flex items-center justify-center px-6 py-3 rounded-xl font-bold text-white border border-white/10 bg-gradient-to-r from-purple-600/90 via-fuchsia-600/90 to-cyan-500/85 hover:from-purple-500 hover:via-fuchsia-500 hover:to-cyan-400 shadow-[0_0_30px_rgba(217,70,239,0.22)] transition-all"
+                class="group relative inline-flex items-center justify-center px-8 py-3 rounded-xl font-bold text-black bg-white hover:bg-neutral-200 transition-all shadow-[0_0_20px_rgba(255,255,255,0.3)] hover:shadow-[0_0_30px_rgba(255,255,255,0.5)] overflow-hidden w-full md:w-auto"
               >
-                重新开始
+                <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/50 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700"></div>
+                <span class="relative z-10">再次挑战</span>
               </button>
+              
               <button
                 @click="emit('remake')"
-                class="inline-flex items-center justify-center px-6 py-3 rounded-xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-[0_0_25px_rgba(34,211,238,0.14)] transition-all"
+                class="group relative inline-flex items-center justify-center px-6 py-3 rounded-xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-lg transition-all overflow-hidden w-full md:w-auto"
               >
-                重新制作
+                <div class="absolute inset-0 bg-white/5 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                <span class="relative z-10">重新生成</span>
+              </button>
+
+              <div class="hidden md:block h-8 w-px bg-white/10 mx-2"></div>
+
+              <!-- Accessibility Info -->
+              <div class="flex items-center justify-center md:justify-start gap-2 px-3 py-1.5 rounded-lg border border-white/5 bg-white/5 backdrop-blur-sm select-none w-full md:w-auto">
+                <div :class="['w-2 h-2 rounded-full animate-pulse', isShared ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]']"></div>
+                <span class="text-xs font-mono text-white/60 uppercase tracking-wider">
+                  {{ isShared ? 'Public' : 'Private' }}
+                </span>
+              </div>
+
+              <!-- Share Button -->
+              <button
+                @click="handleShare"
+                :disabled="shareLoading"
+                class="group relative inline-flex items-center justify-center px-4 py-3 rounded-xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-[0_0_25px_rgba(34,211,238,0.14)] transition-all gap-2 overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed w-full md:w-auto"
+              >
+                <div class="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                <Share2 v-if="!isShared" class="w-4 h-4 relative z-10" />
+                <Lock v-else class="w-4 h-4 relative z-10" />
+                <span class="relative z-10">{{ shareLoading ? '处理中...' : (isShared ? '取消分享' : '分享剧情') }}</span>
+              </button>
+
+              <button
+                @click="showJsonModal = true"
+                class="group relative inline-flex items-center justify-center px-4 py-3 rounded-xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-[0_0_25px_rgba(34,211,238,0.14)] transition-all gap-2 overflow-hidden w-full md:w-auto"
+              >
+                <div class="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                <FileJson class="w-4 h-4 relative z-10" />
+                <span class="relative z-10">导出</span>
               </button>
             </div>
           </div>
@@ -587,10 +686,7 @@ const selectedNodeInfo = computed(() => {
                   <div class="text-white/50 text-xs tracking-wider uppercase">type</div>
                   <div class="mt-1 font-semibold text-white/90">{{ resolvedEnding.type }}</div>
                 </div>
-                <div class="rounded-xl border border-white/10 bg-white/5 px-4 py-3">
-                  <div class="text-white/50 text-xs tracking-wider uppercase">endingKey</div>
-                  <div class="mt-1 font-mono text-white/90 break-all">{{ endingDetails.endingKey || '-' }}</div>
-                </div>
+                <!-- endingKey removed -->
                 <div class="rounded-xl border border-white/10 bg-white/5 px-4 py-3">
                   <div class="text-white/50 text-xs tracking-wider uppercase">nodeId</div>
                   <div class="mt-1 font-mono text-white/90 break-all">{{ endingDetails.nodeId || '-' }}</div>
@@ -601,10 +697,7 @@ const selectedNodeInfo = computed(() => {
                 </div>
               </div>
 
-              <div v-if="endingDetails.fromMap" class="mt-6 rounded-2xl border border-white/10 bg-white/5 p-5">
-                <div class="text-xs tracking-[0.24em] uppercase text-white/50 font-semibold">endings 映射</div>
-                <div class="mt-3 text-sm text-white/80 leading-relaxed">{{ endingDetails.fromMap.description }}</div>
-              </div>
+              <!-- Endings Map Removed -->
             </section>
 
             <section class="rounded-2xl border border-white/10 bg-black/35 backdrop-blur-xl p-6 shadow-2xl overflow-hidden">
@@ -723,7 +816,6 @@ const selectedNodeInfo = computed(() => {
                     <div class="mt-3 text-xs text-white/55">type: {{ selectedNodeInfo.type }}</div>
                   </template>
                   <template v-else>
-                    <div v-if="selectedNodeInfo.endingKey" class="mt-3 text-xs text-white/55">endingKey: {{ selectedNodeInfo.endingKey }}</div>
                     <div v-if="selectedNodeInfo.characters?.length" class="mt-3 text-xs text-white/55">characters: {{ selectedNodeInfo.characters.join(' / ') }}</div>
                     <div class="mt-3 text-sm text-white/80 leading-relaxed max-h-[140px] overflow-auto custom-scrollbar">{{ selectedNodeInfo.content }}</div>
                     <div v-if="selectedNodeInfo.choices?.length" class="mt-3">
@@ -748,6 +840,85 @@ const selectedNodeInfo = computed(() => {
         </div>
       </div>
     </div>
+
+    <!-- JSON Export Modal -->
+    <Teleport to="body">
+      <div v-if="showJsonModal" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" @click.self="showJsonModal = false">
+        <div class="relative w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
+          <div class="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/5">
+            <div class="flex items-center gap-2">
+              <FileJson class="w-5 h-5 text-purple-400" />
+              <span class="font-bold text-white/90">完整剧情信息导出</span>
+            </div>
+            <button @click="showJsonModal = false" class="text-white/50 hover:text-white transition">
+              <X class="w-5 h-5" />
+            </button>
+          </div>
+          
+          <div class="flex-1 overflow-auto p-6 custom-scrollbar">
+            <pre class="font-mono text-xs md:text-sm text-emerald-400 bg-black/50 p-4 rounded-xl border border-white/5 whitespace-pre-wrap break-all">{{ jsonContent }}</pre>
+          </div>
+          
+          <div class="p-6 border-t border-white/10 bg-white/5 flex justify-end gap-3">
+            <button @click="showJsonModal = false" class="px-4 py-2 rounded-lg text-sm font-medium text-white/60 hover:text-white transition">关闭</button>
+            <button @click="downloadJson" class="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm font-medium transition border border-white/10">
+              <Download class="w-4 h-4" />
+              下载 JSON
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Share Modal -->
+    <Teleport to="body">
+      <div v-if="showShareModal" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" @click.self="showShareModal = false">
+        <div class="relative w-full max-w-lg rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-2xl overflow-hidden flex flex-col">
+          <div class="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/5">
+            <div class="flex items-center gap-2">
+              <Globe class="w-5 h-5 text-green-400" />
+              <span class="font-bold text-white/90">剧情已分享</span>
+            </div>
+            <button @click="showShareModal = false" class="text-white/50 hover:text-white transition">
+              <X class="w-5 h-5" />
+            </button>
+          </div>
+          
+          <div class="p-6">
+            <p class="text-white/70 text-sm mb-4 leading-relaxed">
+              您的剧情已成功设置为公开访问。任何拥有链接的人都可以体验此剧情。
+            </p>
+            
+            <div class="flex items-center gap-2 p-3 rounded-xl border border-white/10 bg-black/50 mb-4">
+              <LinkIcon class="w-4 h-4 text-white/40 flex-shrink-0" />
+              <a :href="shareLink" target="_blank" class="flex-1 font-mono text-xs text-cyan-400 hover:text-cyan-300 underline truncate">{{ shareLink }}</a>
+              <button 
+                @click="copyShareLink"
+                class="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-bold text-white transition whitespace-nowrap"
+              >
+                复制链接
+              </button>
+            </div>
+            
+            <div class="flex items-center gap-3 p-3 rounded-xl border border-yellow-500/20 bg-yellow-500/5">
+               <Lock class="w-4 h-4 text-yellow-500/80 flex-shrink-0" />
+               <div class="text-xs text-yellow-200/80 leading-relaxed">
+                 再次点击页面上的"取消分享"按钮可随时撤回访问权限。撤回后，此链接将立即失效。
+               </div>
+            </div>
+          </div>
+          
+          <div class="p-6 border-t border-white/10 bg-white/5 flex justify-end">
+            <button
+              @click="showShareModal = false"
+              class="px-5 py-2.5 rounded-xl font-bold text-black bg-white hover:bg-white/90 transition shadow-lg shadow-white/10"
+            >
+              完成
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 

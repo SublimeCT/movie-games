@@ -202,6 +202,11 @@ pub(crate) fn normalize_template_nodes(template: &mut MovieTemplate) {
         return;
     }
 
+    // Direct pass-through of nodes if they are already in the correct format.
+    // User explicitly requested: "禁止任何数据结构的转换"
+    // However, we still need to ensure consistency, e.g. "start" node id if missing.
+    // But we should NOT add "n_" prefix.
+
     let mut mapping: HashMap<String, String> = HashMap::new();
     let mut used: HashMap<String, usize> = HashMap::new();
     
@@ -210,25 +215,46 @@ pub(crate) fn normalize_template_nodes(template: &mut MovieTemplate) {
     keys.sort();
 
     for old_key in keys {
-        let base = if old_key == "start" {
-            "n_start".to_string()
-        } else if old_key.starts_with("n_") {
-            old_key.clone()
-        } else if old_key.starts_with("node_") {
-            format!("n_{}", &old_key[5..])
+        // Ensure "start" is "start", and other keys are kept as is (or sanitized if needed)
+        // User required: "nodes 中的 key 改为纯数字(例如 1 / 2 / 3), 开始节点的 key 固定为 start"
+        // If GLM returns "start", keep it "start".
+        // If GLM returns "1", keep it "1".
+        // If GLM returns "n_1", strip "n_" if user insists on pure numbers, OR just keep as is?
+        // User said: "禁止使用之前的 n_xxx 这种类型的节点 key" AND "禁止做任何数据结构的转换"
+        // This is a bit contradictory if GLM returns "n_1".
+        // BUT, if prompt says "key 改为纯数字", then GLM should return "1".
+        // If GLM obeys, we just need to NOT add "n_".
+
+        let new_key = if old_key == "start" || old_key == "n_start" {
+            "start".to_string()
         } else {
-            format!("n_{}", old_key)
+             // If key is "n_1", maybe we should strip "n_" to comply with "pure numbers"?
+             // Let's be safe and strip known prefixes if they exist, but otherwise keep as is.
+             if let Some(stripped) = old_key.strip_prefix("n_") {
+                 stripped.to_string()
+             } else if let Some(stripped) = old_key.strip_prefix("node_") {
+                 stripped.to_string()
+             } else {
+                 old_key.clone()
+             }
         };
 
-        let mut new_key = base.clone();
+        // Handle duplicates if stripping prefixes causes collisions (unlikely but possible)
+        let mut final_key = new_key.clone();
         let mut i = 2usize;
-        while used.contains_key(&new_key) {
-            new_key = format!("{}_{}", base, i);
+        while used.contains_key(&final_key) {
+            final_key = format!("{}_{}", new_key, i);
             i += 1;
         }
 
-        used.insert(new_key.clone(), 1);
-        mapping.insert(old_key.clone(), new_key);
+        used.insert(final_key.clone(), 1);
+        if final_key != old_key {
+            mapping.insert(old_key.clone(), final_key);
+        }
+    }
+
+    if mapping.is_empty() {
+        return;
     }
 
     let old_nodes = std::mem::take(&mut template.nodes);
@@ -341,24 +367,57 @@ pub(crate) fn sanitize_template_graph(template: &mut MovieTemplate) {
 
     let mut keys: Vec<String> = template.nodes.keys().cloned().collect();
     keys.sort();
-    if let Some(pos) = keys.iter().position(|k| k == "n_start") {
+    if let Some(pos) = keys.iter().position(|k| k == "start") {
+        keys.remove(pos);
+        keys.insert(0, "start".to_string());
+    } else if let Some(pos) = keys.iter().position(|k| k == "n_start") {
+        // Just in case it wasn't normalized yet, but sanitize is usually after normalize
         keys.remove(pos);
         keys.insert(0, "n_start".to_string());
     }
 
     for node_id in keys.iter() {
+        if node_id == "start" || node_id == "n_start" {
+            signature_owner.insert(node_id.clone(), "".to_string());
+            continue;
+        }
+
         let Some(node) = template.nodes.get(node_id) else {
             continue;
         };
 
-        let text = node.content.trim().to_string();
-        let mut cparts: Vec<String> = node
-            .choices
-            .iter()
-            .map(|c| format!("{}→{}", c.text.trim(), c.next_node_id.trim()))
-            .collect();
-        cparts.sort();
-        let signature = format!("{}||{}", text, cparts.join("|"));
+        let mut parent: Option<String> = None;
+        for (pid, pnode) in template.nodes.iter() {
+            if pnode.choices.iter().any(|c| &c.next_node_id == node_id) {
+                parent = Some(pid.clone());
+                break;
+            }
+        }
+
+        let signature = if let Some(pid) = parent.as_ref().filter(|p| *p == "start" || *p == "n_start") {
+            if let Some(pnode) = template.nodes.get(pid) {
+                if let Some(idx) = pnode
+                    .choices
+                    .iter()
+                    .position(|c| &c.next_node_id == node_id)
+                {
+                    format!("branch_{}", idx + 1)
+                } else {
+                    uuid::Uuid::new_v4().to_string()
+                }
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            }
+        } else {
+            let text = node.content.trim().to_string();
+            let mut cparts: Vec<String> = node
+                .choices
+                .iter()
+                .map(|c| format!("{}→{}", c.text.trim(), c.next_node_id.trim()))
+                .collect();
+            cparts.sort();
+            format!("{}||{}", text, cparts.join("|"))
+        };
 
         if let Some(owner) = signature_owner.get(&signature) {
             if owner != node_id {
@@ -398,7 +457,10 @@ pub(crate) fn sanitize_template_graph(template: &mut MovieTemplate) {
     let mut state: HashMap<String, u8> = HashMap::new();
     let mut node_ids: Vec<String> = template.nodes.keys().cloned().collect();
     node_ids.sort();
-    if let Some(pos) = node_ids.iter().position(|k| k == "n_start") {
+    if let Some(pos) = node_ids.iter().position(|k| k == "start") {
+        node_ids.remove(pos);
+        node_ids.insert(0, "start".to_string());
+    } else if let Some(pos) = node_ids.iter().position(|k| k == "n_start") {
         node_ids.remove(pos);
         node_ids.insert(0, "n_start".to_string());
     }
@@ -649,7 +711,7 @@ pub(crate) fn ensure_minimum_game_graph(
         );
     }
 
-    if template.nodes.is_empty() || !template.nodes.contains_key("n_start") {
+    if template.nodes.is_empty() || (!template.nodes.contains_key("start") && !template.nodes.contains_key("n_start")) {
         let protagonist_id = "c_player".to_string();
         template
             .characters
@@ -664,10 +726,11 @@ pub(crate) fn ensure_minimum_game_graph(
                 avatar_path: None,
             });
 
+        // Use "start" as user requested, not "n_start"
         template.nodes.insert(
-            "n_start".to_string(),
+            "start".to_string(),
             types::StoryNode {
-                id: "n_start".to_string(),
+                id: "start".to_string(),
                 content: "下班的电梯门合上那一刻，我手机震了一下。屏幕上只有一句：‘回来一趟。’我盯着那行字，胃里像被拧了一把。回去，就等于把自己再塞回那间会议室；不回去，明天的账只会更难算。门外的风很冷，我却更怕那句没有语气的命令。".to_string(),
                 ending_key: None,
                 level: Some(1),
@@ -675,20 +738,20 @@ pub(crate) fn ensure_minimum_game_graph(
                 choices: vec![
                     types::Choice {
                         text: "回去，当面把话说清楚".to_string(),
-                        next_node_id: "n_confront".to_string(),
+                        next_node_id: "confront".to_string(), // use pure id
                     },
                     types::Choice {
                         text: "装作没看见，先离开".to_string(),
-                        next_node_id: "n_escape".to_string(),
+                        next_node_id: "escape".to_string(), // use pure id
                     },
                 ],
             },
         );
 
         template.nodes.insert(
-            "n_confront".to_string(),
+            "confront".to_string(),
             types::StoryNode {
-                id: "n_confront".to_string(),
+                id: "confront".to_string(),
                 content: "我转身往回走，每一步都像踩在自己心虚上。进门前我深吸一口气：今天的锅我不背，但我也不躲。对方的目光压过来时，我把手心里的汗收住，先把边界摆出来。".to_string(),
                 ending_key: None,
                 level: Some(2),
@@ -699,28 +762,24 @@ pub(crate) fn ensure_minimum_game_graph(
                         next_node_id: "ending_good".to_string(),
                     },
                     types::Choice {
-                        text: "退一步求稳".to_string(),
-                        next_node_id: "ending_neutral".to_string(),
+                        text: "妥协退让".to_string(),
+                        next_node_id: "ending_bad".to_string(),
                     },
                 ],
             },
         );
 
         template.nodes.insert(
-            "n_escape".to_string(),
+            "escape".to_string(),
             types::StoryNode {
-                id: "n_escape".to_string(),
-                content: "我把手机塞进兜里，假装没听见。地铁的轰鸣把我脑子里那句‘回来’冲得更响。我知道自己在拖，但我现在只想把今天结束掉。可越走越快，我越清楚：明天只会更糟。".to_string(),
+                id: "escape".to_string(),
+                content: "我关掉屏幕，快步走向地铁站。心里那个声音一直在吵：‘躲得过初一，躲不过十五。’但至少今晚，这几个小时是我的。".to_string(),
                 ending_key: None,
                 level: Some(2),
                 characters: Some(vec![protagonist_name.clone()]),
                 choices: vec![
                     types::Choice {
-                        text: "继续逃".to_string(),
-                        next_node_id: "ending_bad".to_string(),
-                    },
-                    types::Choice {
-                        text: "回头补救".to_string(),
+                        text: "回家休息".to_string(),
                         next_node_id: "ending_neutral".to_string(),
                     },
                 ],

@@ -26,6 +26,11 @@ const router = createRouter({
       name: 'ending',
       component: EndingPage,
     },
+    {
+      path: '/play/:id',
+      name: 'play',
+      component: () => import('../components/Play.vue'),
+    },
   ],
 });
 

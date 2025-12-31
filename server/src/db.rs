@@ -142,3 +142,70 @@ pub(crate) async fn finish_glm_request_log(
         eprintln!("Failed to update glm_request log: {}", e);
     }
 }
+
+pub(crate) async fn save_processed_response(
+    db: &PgPool,
+    id: Uuid,
+    response: &serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("update glm_requests set processed_response = $1 where id = $2")
+        .bind(response)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn get_request_owner(
+    db: &PgPool,
+    id: Uuid,
+) -> Result<Option<(String, String)>, sqlx::Error> {
+    let row: Option<(String, String)> = sqlx::query_as("select client_ip, status from glm_requests where id = $1")
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
+    Ok(row)
+}
+
+pub(crate) async fn set_share_status(
+    db: &PgPool,
+    id: Uuid,
+    shared: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("update glm_requests set shared = $1 where id = $2")
+        .bind(shared)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn get_shared_game(
+    db: &PgPool,
+    id: Uuid,
+) -> Result<Option<serde_json::Value>, sqlx::Error> {
+    let row: Option<(serde_json::Value,)> = sqlx::query_as("select processed_response from glm_requests where id = $1 and shared = true")
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
+    Ok(row.map(|r| r.0))
+}
+
+pub(crate) async fn record_visit(
+    db: &PgPool,
+    request_id: Uuid,
+    client_ip: &str,
+    user_agent: &str,
+    referer: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let id = Uuid::new_v4();
+    sqlx::query("insert into records (id, request_id, client_ip, user_agent, referer) values ($1, $2, $3, $4, $5)")
+        .bind(id)
+        .bind(request_id)
+        .bind(client_ip)
+        .bind(user_agent)
+        .bind(referer)
+        .execute(db)
+        .await?;
+    Ok(())
+}

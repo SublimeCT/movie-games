@@ -243,17 +243,89 @@ const parseImportData = (): MovieTemplate | null => {
       return null;
     }
 
-    const data = dataRaw as MovieTemplate;
-    const nodes = (data as unknown as { nodes?: unknown }).nodes;
+    const record = dataRaw as Record<string, unknown>;
+
+    const nodes = record.nodes;
     if (!nodes || typeof nodes !== 'object') {
       importError.value = 'JSON 缺少 nodes';
       return null;
     }
 
-    const endings = (data as unknown as { endings?: unknown }).endings;
-    if (!endings || typeof endings !== 'object') {
-      (data as unknown as { endings: Record<string, unknown> }).endings = {};
-    }
+    const createId = () => {
+      try {
+        return crypto.randomUUID();
+      } catch {
+        return `p_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      }
+    };
+
+    const metaRaw = record.meta;
+    const meta =
+      metaRaw && typeof metaRaw === 'object'
+        ? (metaRaw as Record<string, unknown>)
+        : ({} as Record<string, unknown>);
+
+    const normalized: MovieTemplate = {
+      projectId:
+        typeof record.projectId === 'string' && record.projectId.trim()
+          ? record.projectId.trim()
+          : createId(),
+      title:
+        typeof record.title === 'string' && record.title.trim()
+          ? record.title
+          : theme.value.trim(),
+      version:
+        typeof record.version === 'string' && record.version.trim()
+          ? record.version.trim()
+          : '1.0.0',
+      owner:
+        typeof record.owner === 'string' && record.owner.trim()
+          ? record.owner.trim()
+          : 'User',
+      meta: {
+        logline:
+          typeof meta.logline === 'string' && meta.logline.trim()
+            ? meta.logline
+            : theme.value.trim(),
+        synopsis:
+          typeof meta.synopsis === 'string' && meta.synopsis.trim()
+            ? meta.synopsis
+            : synopsis.value.trim(),
+        targetRuntimeMinutes:
+          typeof meta.targetRuntimeMinutes === 'number' &&
+          Number.isFinite(meta.targetRuntimeMinutes)
+            ? meta.targetRuntimeMinutes
+            : 0,
+        genre:
+          typeof meta.genre === 'string' && meta.genre.trim()
+            ? meta.genre
+            : (selectedGenres.value || []).join(' / '),
+        language:
+          typeof meta.language === 'string' && meta.language.trim()
+            ? meta.language
+            : String(navigator.language || '').trim(),
+      },
+      backgroundImageBase64:
+        typeof record.backgroundImageBase64 === 'string'
+          ? record.backgroundImageBase64
+          : undefined,
+      nodes: record.nodes as MovieTemplate['nodes'],
+      endings:
+        record.endings && typeof record.endings === 'object'
+          ? (record.endings as MovieTemplate['endings'])
+          : {},
+      characters:
+        record.characters && typeof record.characters === 'object'
+          ? (record.characters as MovieTemplate['characters'])
+          : {},
+      provenance:
+        record.provenance && typeof record.provenance === 'object'
+          ? (record.provenance as MovieTemplate['provenance'])
+          : {
+              createdBy: 'import',
+              createdAt: new Date().toISOString(),
+            },
+    };
 
     const reqId = obj.id;
     if (
@@ -262,10 +334,57 @@ const parseImportData = (): MovieTemplate | null => {
       typeof reqId === 'string' &&
       reqId.trim()
     ) {
-      (data as unknown as { requestId?: string }).requestId = reqId.trim();
+      normalized.requestId = reqId.trim();
+    } else if (
+      typeof record.requestId === 'string' &&
+      record.requestId.trim()
+    ) {
+      normalized.requestId = record.requestId.trim();
     }
 
-    return data;
+    if (
+      (!normalized.characters ||
+        Object.keys(normalized.characters).length === 0) &&
+      Array.isArray(characters.value)
+    ) {
+      const fallbackChars = characters.value
+        .map((c) => {
+          const name = String(c.name || '').trim();
+          if (!name) return null;
+          return {
+            id: name,
+            name,
+            gender: String(c.gender || '其他').trim() || '其他',
+            age: 0,
+            role: String(c.description || '').trim(),
+            background: '',
+            avatarPath: c.avatarPath || undefined,
+          };
+        })
+        .filter(Boolean) as MovieTemplate['characters'][string][];
+
+      const map: MovieTemplate['characters'] = {};
+      for (const ch of fallbackChars) map[ch.id] = ch;
+      if (Object.keys(map).length > 0) normalized.characters = map;
+    }
+
+    if (
+      !normalized.characters ||
+      Object.keys(normalized.characters).length === 0
+    ) {
+      normalized.characters = {
+        主角: {
+          id: '主角',
+          name: '主角',
+          gender: '其他',
+          age: 0,
+          role: '',
+          background: '',
+        },
+      };
+    }
+
+    return normalized;
   } catch {
     importError.value = 'JSON 解析失败，请检查格式';
     return null;

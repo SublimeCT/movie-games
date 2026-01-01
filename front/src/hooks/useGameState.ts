@@ -10,6 +10,207 @@ import type { Ending, MovieTemplate } from '../types/movie';
 export function useGameState() {
   const router = useRouter();
 
+  const isRecord = (v: unknown): v is Record<string, unknown> =>
+    Boolean(v) && typeof v === 'object';
+
+  const createId = () => {
+    try {
+      return crypto.randomUUID();
+    } catch {
+      return `p_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    }
+  };
+
+  const readLocalJson = <T>(key: string, fallback: T): T => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return fallback;
+      const v = JSON.parse(raw) as unknown;
+      return v as T;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const readLocalTheme = () =>
+    String(localStorage.getItem('mg_theme') || '').trim();
+  const readLocalSynopsis = () =>
+    String(localStorage.getItem('mg_synopsis') || '').trim();
+
+  const readLocalGenres = (): string[] => {
+    const v = readLocalJson<unknown>('mg_genres', []);
+    if (!Array.isArray(v)) return [];
+    return v.map((x) => String(x || '').trim()).filter(Boolean);
+  };
+
+  const readLocalCharacters = (): Array<{
+    name: string;
+    description: string;
+    gender: string;
+    isMain: boolean;
+    avatarPath?: string;
+  }> => {
+    const v = readLocalJson<unknown>('mg_characters', []);
+    if (!Array.isArray(v)) return [];
+    return v
+      .map((x) => {
+        if (!isRecord(x)) return null;
+        const name = String(x.name || '').trim();
+        if (!name) return null;
+        return {
+          name,
+          description: String(x.description || '').trim(),
+          gender: String(x.gender || '其他').trim() || '其他',
+          isMain: Boolean(x.isMain),
+          avatarPath:
+            typeof x.avatarPath === 'string' && x.avatarPath.trim()
+              ? x.avatarPath.trim()
+              : undefined,
+        };
+      })
+      .filter(Boolean) as Array<{
+      name: string;
+      description: string;
+      gender: string;
+      isMain: boolean;
+      avatarPath?: string;
+    }>;
+  };
+
+  const normalizeTemplate = (input: unknown): MovieTemplate | null => {
+    if (!isRecord(input)) return null;
+
+    const nodes = input.nodes;
+    if (!nodes || typeof nodes !== 'object') return null;
+
+    const metaRaw = input.meta;
+    const meta =
+      metaRaw && typeof metaRaw === 'object'
+        ? (metaRaw as Record<string, unknown>)
+        : ({} as Record<string, unknown>);
+
+    const localTheme = readLocalTheme();
+    const localSynopsis = readLocalSynopsis();
+    const localGenreList = readLocalGenres();
+    const localChars = readLocalCharacters();
+
+    const titleFromInput = String(input.title || '').trim();
+    const loglineFromInput = String(meta.logline || '').trim();
+    const theme = loglineFromInput || titleFromInput || localTheme;
+
+    const synopsisFromInput = String(meta.synopsis || '').trim();
+    const synopsis = synopsisFromInput || localSynopsis;
+
+    const genreFromInput = String(meta.genre || '').trim();
+    const genre = genreFromInput || localGenreList.filter(Boolean).join(' / ');
+
+    const languageFromInput = String(meta.language || '').trim();
+    const language =
+      languageFromInput || String(navigator.language || '').trim() || 'zh-CN';
+
+    const targetRuntimeMinutesRaw = meta.targetRuntimeMinutes;
+    const targetRuntimeMinutes =
+      typeof targetRuntimeMinutesRaw === 'number' &&
+      Number.isFinite(targetRuntimeMinutesRaw)
+        ? targetRuntimeMinutesRaw
+        : 0;
+
+    const charactersRaw = input.characters;
+    const charactersFromInput =
+      charactersRaw && typeof charactersRaw === 'object'
+        ? (charactersRaw as MovieTemplate['characters'])
+        : {};
+
+    const buildCharactersFromLocal = () => {
+      const list =
+        localChars.length > 0
+          ? localChars
+          : [
+              {
+                name: '主角',
+                description: '故事的核心人物',
+                gender: '男',
+                isMain: true,
+              },
+            ];
+
+      const main = list.find((c) => c.isMain) ?? list[0];
+      const map: MovieTemplate['characters'] = {};
+      for (const c of list) {
+        const id = String(c.name || '').trim() || createId();
+        map[id] = {
+          id,
+          name: String(c.name || '').trim() || '角色',
+          gender: String(c.gender || '其他').trim() || '其他',
+          age: 0,
+          role: String(c.description || '').trim(),
+          background: '',
+          avatarPath: c.avatarPath || undefined,
+        };
+      }
+
+      if (main) {
+        const mainId = String(main.name || '').trim();
+        if (mainId && map[mainId]) {
+          map[mainId] = { ...map[mainId], id: mainId };
+        }
+      }
+
+      return map;
+    };
+
+    const characters =
+      charactersFromInput && Object.keys(charactersFromInput).length > 0
+        ? charactersFromInput
+        : buildCharactersFromLocal();
+
+    const provenanceRaw = input.provenance;
+    const provenance =
+      provenanceRaw && typeof provenanceRaw === 'object'
+        ? (provenanceRaw as MovieTemplate['provenance'])
+        : { createdBy: 'import', createdAt: new Date().toISOString() };
+
+    const normalized: MovieTemplate = {
+      requestId:
+        typeof input.requestId === 'string' && input.requestId.trim()
+          ? input.requestId.trim()
+          : undefined,
+      projectId:
+        typeof input.projectId === 'string' && input.projectId.trim()
+          ? input.projectId.trim()
+          : createId(),
+      title: theme || titleFromInput,
+      version:
+        typeof input.version === 'string' && input.version.trim()
+          ? input.version.trim()
+          : '1.0.0',
+      owner:
+        typeof input.owner === 'string' && input.owner.trim()
+          ? input.owner.trim()
+          : 'User',
+      meta: {
+        logline: theme,
+        synopsis,
+        targetRuntimeMinutes,
+        genre,
+        language,
+      },
+      backgroundImageBase64:
+        typeof input.backgroundImageBase64 === 'string'
+          ? input.backgroundImageBase64
+          : undefined,
+      nodes: nodes as MovieTemplate['nodes'],
+      endings:
+        input.endings && typeof input.endings === 'object'
+          ? (input.endings as MovieTemplate['endings'])
+          : {},
+      characters,
+      provenance,
+    };
+
+    return normalized;
+  };
+
   // 持久化游戏数据
   const gameData = useStorage<MovieTemplate | null>(
     'mg_active_game_data',
@@ -26,7 +227,8 @@ export function useGameState() {
           )
             return null;
           try {
-            return JSON.parse(String(v));
+            const parsed = JSON.parse(String(v)) as unknown;
+            return normalizeTemplate(parsed);
           } catch (e) {
             console.warn('Failed to parse game data, resetting:', e);
             return null;
@@ -74,6 +276,38 @@ export function useGameState() {
     if (endingData.value === '[object Object]') {
       console.warn('Fixing corrupted ending data storage');
       endingData.value = null;
+    }
+
+    try {
+      const raw = localStorage.getItem('mg_active_game_data');
+      if (
+        !raw ||
+        raw === 'null' ||
+        raw === 'undefined' ||
+        raw === '[object Object]'
+      ) {
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as unknown;
+      const normalized = normalizeTemplate(parsed);
+      if (!normalized) return;
+
+      const obj = isRecord(parsed) ? parsed : {};
+      const metaOk = isRecord(obj.meta);
+      const charactersOk = isRecord(obj.characters);
+      const provenanceOk = isRecord(obj.provenance);
+      const baseOk =
+        typeof obj.projectId === 'string' &&
+        typeof obj.version === 'string' &&
+        typeof obj.owner === 'string';
+
+      if (!metaOk || !charactersOk || !provenanceOk || !baseOk) {
+        localStorage.setItem('mg_active_game_data', JSON.stringify(normalized));
+        gameData.value = normalized;
+      }
+    } catch {
+      // ignore
     }
   });
 

@@ -16,8 +16,8 @@ import {
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import {
+  type CharacterInput as ApiCharacterInput,
   ApiError,
-  type CharacterInput,
   expandCharacter,
   expandSynopsis,
   generatePrompt,
@@ -29,6 +29,10 @@ import type { MovieTemplate } from '../types/movie';
 import CinematicLoader from './ui/CinematicLoader.vue';
 import { FluidCursor } from './ui/fluid-cursor';
 import { WavyBackground } from './ui/wavy-background';
+
+type LocalCharacterInput = ApiCharacterInput & {
+  avatarPath?: string;
+};
 
 const router = useRouter();
 // 使用 hook 获取游戏开始方法
@@ -42,7 +46,7 @@ const synopsis = useStorage('mg_synopsis', ''); // Renamed from worldview
 /** Selected genres for the movie */
 const selectedGenres = useStorage<string[]>('mg_genres', []); // Added genres
 /** List of characters involved in the story */
-const characters = useStorage<CharacterInput[]>('mg_characters', [
+const characters = useStorage<LocalCharacterInput[]>('mg_characters', [
   { name: '主角', description: '故事的核心人物', gender: '男', isMain: true },
 ]);
 /** GLM 的默认请求地址（用于判定“是否被修改”） */
@@ -387,6 +391,10 @@ const handleExpandSynopsis = async () => {
  * Generates characters based on the theme and synopsis using AI.
  * Requires API key and non-empty synopsis.
  */
+const toApiCharacters = (list: LocalCharacterInput[]): ApiCharacterInput[] => {
+  return list.map(({ avatarPath: _avatarPath, ...rest }) => rest);
+};
+
 const handleExpandCharacter = async () => {
   const apiKey = glmApiKey.value.trim();
   const baseUrl = glmBaseUrl.value.trim();
@@ -400,13 +408,13 @@ const handleExpandCharacter = async () => {
     const newChars = await expandCharacter(
       theme.value,
       synopsis.value,
-      characters.value,
+      toApiCharacters(characters.value),
       navigator.language,
       apiKey || undefined,
       baseUrl || undefined,
       model || undefined,
     );
-    characters.value = newChars;
+    characters.value = newChars.map((c) => ({ ...c }));
     // biome-ignore lint/suspicious/noExplicitAny: Error handling
   } catch (e: any) {
     if (e instanceof ApiError) {
@@ -481,7 +489,7 @@ const handleGenerate = async () => {
     theme: theme.value,
     synopsis: synopsis.value,
     genre: selectedGenres.value,
-    characters: characters.value,
+    characters: toApiCharacters(characters.value),
     language: navigator.language,
     size: selectCogViewSize(),
     apiKey: glmApiKey.value.trim(),
@@ -508,7 +516,7 @@ const handleGeneratePrompt = async () => {
       theme: theme.value,
       synopsis: synopsis.value,
       genre: selectedGenres.value,
-      characters: characters.value,
+      characters: toApiCharacters(characters.value),
       language: navigator.language,
       size,
       apiKey: apiKey || undefined,
@@ -594,18 +602,74 @@ const parseImportData = (): MovieTemplate | null => {
       return null;
     }
 
-    const data = dataRaw as MovieTemplate;
+    const record = dataRaw as Record<string, unknown>;
 
-    const nodes = (data as unknown as { nodes?: unknown }).nodes;
+    const nodes = record.nodes;
     if (!nodes || typeof nodes !== 'object') {
       importError.value = 'JSON 缺少 nodes';
       return null;
     }
 
-    const endings = (data as unknown as { endings?: unknown }).endings;
-    if (!endings || typeof endings !== 'object') {
-      (data as unknown as { endings: Record<string, unknown> }).endings = {};
-    }
+    const createId = () => {
+      try {
+        return crypto.randomUUID();
+      } catch {
+        return `p_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      }
+    };
+
+    const metaRaw = record.meta;
+    const meta =
+      metaRaw && typeof metaRaw === 'object'
+        ? (metaRaw as Record<string, unknown>)
+        : ({} as Record<string, unknown>);
+
+    const normalized: MovieTemplate = {
+      projectId:
+        typeof record.projectId === 'string' && record.projectId.trim()
+          ? record.projectId.trim()
+          : createId(),
+      title: typeof record.title === 'string' ? record.title : '',
+      version:
+        typeof record.version === 'string' && record.version.trim()
+          ? record.version.trim()
+          : '1.0.0',
+      owner:
+        typeof record.owner === 'string' && record.owner.trim()
+          ? record.owner.trim()
+          : 'User',
+      meta: {
+        logline: typeof meta.logline === 'string' ? meta.logline : '',
+        synopsis: typeof meta.synopsis === 'string' ? meta.synopsis : '',
+        targetRuntimeMinutes:
+          typeof meta.targetRuntimeMinutes === 'number' &&
+          Number.isFinite(meta.targetRuntimeMinutes)
+            ? meta.targetRuntimeMinutes
+            : 0,
+        genre: typeof meta.genre === 'string' ? meta.genre : '',
+        language: typeof meta.language === 'string' ? meta.language : '',
+      },
+      backgroundImageBase64:
+        typeof record.backgroundImageBase64 === 'string'
+          ? record.backgroundImageBase64
+          : undefined,
+      nodes: record.nodes as MovieTemplate['nodes'],
+      endings:
+        record.endings && typeof record.endings === 'object'
+          ? (record.endings as MovieTemplate['endings'])
+          : {},
+      characters:
+        record.characters && typeof record.characters === 'object'
+          ? (record.characters as MovieTemplate['characters'])
+          : {},
+      provenance:
+        record.provenance && typeof record.provenance === 'object'
+          ? (record.provenance as MovieTemplate['provenance'])
+          : {
+              createdBy: 'import',
+              createdAt: new Date().toISOString(),
+            },
+    };
 
     const reqId = obj.id;
     if (
@@ -614,10 +678,82 @@ const parseImportData = (): MovieTemplate | null => {
       typeof reqId === 'string' &&
       reqId.trim()
     ) {
-      (data as unknown as { requestId?: string }).requestId = reqId.trim();
+      normalized.requestId = reqId.trim();
+    } else if (
+      typeof record.requestId === 'string' &&
+      record.requestId.trim()
+    ) {
+      normalized.requestId = record.requestId.trim();
     }
 
-    return data;
+    const fallbackTheme = theme.value.trim();
+    if (fallbackTheme) {
+      normalized.title = fallbackTheme;
+      normalized.meta.logline = fallbackTheme;
+    } else {
+      const fromImport = String(
+        normalized.meta.logline || normalized.title || '',
+      ).trim();
+      normalized.title = fromImport;
+      normalized.meta.logline = fromImport;
+    }
+
+    const fallbackSynopsis = synopsis.value.trim();
+    if (fallbackSynopsis) normalized.meta.synopsis = fallbackSynopsis;
+
+    const fallbackGenreList = (selectedGenres.value || [])
+      .map((g) => String(g || '').trim())
+      .filter(Boolean);
+    if (fallbackGenreList.length > 0) {
+      normalized.meta.genre = fallbackGenreList.join(' / ');
+    }
+
+    const fallbackLanguage = String(navigator.language || '').trim();
+    if (fallbackLanguage) normalized.meta.language = fallbackLanguage;
+
+    if (
+      (!normalized.characters ||
+        Object.keys(normalized.characters).length === 0) &&
+      Array.isArray(characters.value)
+    ) {
+      const fallbackChars = characters.value
+        .map((c) => {
+          const name = String(c.name || '').trim();
+          if (!name) return null;
+          return {
+            id: name,
+            name,
+            gender: String(c.gender || '其他').trim() || '其他',
+            age: 0,
+            role: String(c.description || '').trim(),
+            background: '',
+            avatarPath: c.avatarPath || undefined,
+          };
+        })
+        .filter(Boolean) as MovieTemplate['characters'][string][];
+
+      const map: MovieTemplate['characters'] = {};
+      for (const ch of fallbackChars) map[ch.id] = ch;
+      if (Object.keys(map).length > 0) normalized.characters = map;
+    }
+
+    if (
+      !normalized.characters ||
+      Object.keys(normalized.characters).length === 0
+    ) {
+      normalized.characters = {
+        主角: {
+          id: '主角',
+          name: '主角',
+          gender: '其他',
+          age: 0,
+          role: '',
+          background: '',
+        },
+      };
+    }
+
+    return normalized;
   } catch {
     importError.value = 'JSON 解析失败，请检查格式';
     return null;
@@ -685,7 +821,7 @@ const confirmImportSave = async () => {
         isMain: Boolean(c.isMain),
       };
     })
-    .filter(Boolean) as CharacterInput[];
+    .filter(Boolean) as ApiCharacterInput[];
 
   isImportSaving.value = true;
   importError.value = '';

@@ -126,6 +126,43 @@ export async function generateGame(
   throw new Error('Invalid response format');
 }
 
+export async function importGameTemplate(
+  template: MovieTemplate,
+  theme?: string,
+): Promise<MovieTemplate> {
+  const response = await fetch(`${API_BASE}/import`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ template, theme }),
+  });
+
+  const data = await parseApiResponse<GenerateResponseData | MovieTemplate>(
+    response,
+  );
+
+  if (data && typeof data === 'object') {
+    if ('template' in data && 'id' in data) {
+      const maybeId = (data as GenerateResponseData).id;
+      const maybeTemplate = (data as GenerateResponseData).template;
+      if (typeof maybeId === 'string' && maybeTemplate) {
+        const t = maybeTemplate as MovieTemplate;
+        t.requestId = maybeId;
+        return t;
+      }
+    }
+
+    if ('projectId' in data) {
+      const t = data as MovieTemplate;
+      return t;
+    }
+  }
+
+  console.error('Invalid response data:', data);
+  throw new Error('Invalid response format');
+}
+
 /**
  * 更新剧情的分享状态，并在分享成功时返回 shared_records 的 ID。
  */
@@ -158,13 +195,14 @@ export async function shareGame(
 export async function updateGameTemplate(
   id: string,
   template: MovieTemplate,
+  source?: string,
 ): Promise<MovieTemplate> {
   const response = await fetch(`${API_BASE}/template/update`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ id, template }),
+    body: JSON.stringify({ id, template, source }),
   });
 
   const data = await parseApiResponse<MovieTemplate>(response);

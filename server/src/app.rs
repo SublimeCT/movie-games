@@ -8,7 +8,8 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::db::AppState;
 use crate::handlers::{
     delete_template, expand_character, expand_worldview, generate, generate_prompt,
-    get_shared_game, get_shared_record_meta, hello, list_records, share_game, update_template,
+    get_shared_game, get_shared_record_meta, hello, import_template, list_records, share_game,
+    update_template,
 };
 
 pub(crate) fn build_app(state: AppState) -> Router {
@@ -21,6 +22,7 @@ pub(crate) fn build_app(state: AppState) -> Router {
         .route("/", get(hello))
         .route("/generate", post(generate))
         .route("/generate/prompt", post(generate_prompt))
+        .route("/import", post(import_template))
         .route("/expand/worldview", post(expand_worldview))
         .route("/expand/character", post(expand_character))
         .route("/share", post(share_game))

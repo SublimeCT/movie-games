@@ -4,6 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::json;
 use sqlx::PgPool;
@@ -13,13 +14,15 @@ use uuid::Uuid;
 
 use crate::api_types::{
     CharacterInput, DeleteTemplateRequest, ExpandCharacterRequest, ExpandWorldviewRequest,
-    GenerateRequest, GenerateResponse, RecordsListRequest, ShareRequest, UpdateTemplateRequest,
+    GenerateRequest, GenerateResponse, ImportTemplateRequest, RecordsListRequest, ShareRequest,
+    UpdateTemplateRequest,
 };
 use crate::db::{
-    begin_glm_request_log, delete_game_by_request_id, finish_glm_request_log, get_request_owner,
-    get_shared_record_id_by_request_id, get_shared_record_meta_by_request_id,
-    list_shared_records_by_ids, record_visit, save_processed_response, set_share_status,
-    upsert_shared_record, AppState, DbError,
+    begin_glm_request_log, create_imported_request, delete_game_by_request_id,
+    finish_glm_request_log, get_request_owner, get_shared_record_id_by_request_id,
+    get_shared_record_meta_by_request_id, list_shared_records_by_ids, record_visit,
+    save_processed_response, set_request_template_source, set_share_status, upsert_shared_record,
+    AppState, DbError,
 };
 use crate::glm;
 use crate::images::{
@@ -27,6 +30,7 @@ use crate::images::{
     maybe_attach_generated_avatars, normalize_cogview_size, pick_background_prompt,
 };
 use crate::prompt::{clean_json, construct_prompt};
+use crate::sensitive::SensitiveFilter;
 use crate::template::{
     convert_lite_to_full, normalize_character_ids, normalize_template_endings,
     normalize_template_nodes, sanitize_affinity_effects, sanitize_template_graph,
@@ -95,8 +99,8 @@ fn error_response(
 ) -> (StatusCode, Json<ApiResponse<()>>) {
     let code_str = code.into();
     let status = match code_str.as_str() {
-        CODE_TOO_MANY_REQUESTS => StatusCode::TOO_MANY_REQUESTS,
-        CODE_BAD_REQUEST | CODE_INVALID_BASE_URL => StatusCode::BAD_REQUEST,
+        CODE_TOO_MANY_REQUESTS | "SERVICE_BUSY" => StatusCode::TOO_MANY_REQUESTS,
+        CODE_BAD_REQUEST | CODE_INVALID_BASE_URL | "SENSITIVE_CONTENT" => StatusCode::BAD_REQUEST,
         "FORBIDDEN" => StatusCode::FORBIDDEN,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -117,6 +121,29 @@ fn db_error_response(e: DbError) -> (StatusCode, Json<ApiResponse<()>>) {
 
 fn rate_limit_response(msg: impl Into<String>) -> (StatusCode, Json<ApiResponse<()>>) {
     error_response(CODE_TOO_MANY_REQUESTS, msg)
+}
+
+pub const CODE_SENSITIVE_CONTENT: &str = "SENSITIVE_CONTENT";
+
+fn sensitive_reject_response() -> (StatusCode, Json<ApiResponse<()>>) {
+    error_response(CODE_SENSITIVE_CONTENT, "该剧情存在不当内容, 已拒绝服务")
+}
+
+#[allow(clippy::result_large_err)]
+fn sanitize_and_check_frontend_input<T: Serialize + DeserializeOwned>(
+    filter: &SensitiveFilter,
+    payload: T,
+) -> Result<T, Response> {
+    let mut v = serde_json::to_value(payload)
+        .map_err(|_| error_response(CODE_BAD_REQUEST, "Invalid payload").into_response())?;
+
+    let found = filter.sanitize_json(&mut v);
+    if found > 3 {
+        return Err(sensitive_reject_response().into_response());
+    }
+
+    serde_json::from_value(v)
+        .map_err(|_| error_response(CODE_BAD_REQUEST, "Invalid payload").into_response())
 }
 
 fn is_trusted_proxy_hop(ip: IpAddr) -> bool {
@@ -269,9 +296,52 @@ pub(crate) async fn hello() -> &'static str {
 }
 
 pub(crate) async fn generate_prompt(
+    State(state): State<AppState>,
     Json(payload): Json<GenerateRequest>,
-) -> Json<ApiResponse<String>> {
-    success_response(construct_prompt(&payload))
+) -> Result<Json<ApiResponse<String>>, Response> {
+    let payload = sanitize_and_check_frontend_input(&state.sensitive, payload)?;
+    Ok(success_response(construct_prompt(&payload)))
+}
+
+pub(crate) async fn import_template(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(payload): Json<ImportTemplateRequest>,
+) -> Result<Json<ApiResponse<GenerateResponse>>, Response> {
+    let payload = sanitize_and_check_frontend_input(&state.sensitive, payload)?;
+
+    let client_ip = resolve_client_ip(&headers, &addr);
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+
+    let request_payload = serde_json::to_value(&payload).unwrap_or(json!({}));
+
+    let mut template = payload.template;
+
+    normalize_character_ids(&mut template);
+    normalize_template_endings(&mut template);
+    sanitize_template_graph(&mut template);
+    normalize_template_nodes(&mut template);
+    sanitize_affinity_effects(&mut template);
+
+    ensure_avatar_fallbacks(&mut template, None);
+
+    let processed_response = serde_json::to_value(&template).unwrap_or(json!({}));
+
+    let id = create_imported_request(
+        &state.db,
+        &client_ip,
+        user_agent,
+        request_payload,
+        processed_response,
+    )
+    .await
+    .map_err(|e| db_error_response(e).into_response())?;
+
+    Ok(success_response(GenerateResponse { id, template }))
 }
 
 pub(crate) async fn share_game(
@@ -280,6 +350,8 @@ pub(crate) async fn share_game(
     headers: HeaderMap,
     Json(payload): Json<ShareRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, Response> {
+    let payload = sanitize_and_check_frontend_input(&state.sensitive, payload)?;
+
     let request_info = get_request_owner(&state.db, payload.id)
         .await
         .map_err(|e| {
@@ -315,10 +387,7 @@ pub(crate) async fn share_game(
 
         let id = upsert_shared_record(&state.db, payload.id, &request_ip, ua)
             .await
-            .map_err(|e| {
-                eprintln!("Database error: {}", e);
-                db_error_response(DbError::InternalError).into_response()
-            })?;
+            .map_err(|e| db_error_response(e).into_response())?;
 
         Some(id)
     } else {
@@ -348,6 +417,8 @@ pub(crate) async fn update_template(
     headers: HeaderMap,
     Json(payload): Json<UpdateTemplateRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, Response> {
+    let payload = sanitize_and_check_frontend_input(&state.sensitive, payload)?;
+
     let request_info = get_request_owner(&state.db, payload.id)
         .await
         .map_err(|e| {
@@ -396,6 +467,16 @@ pub(crate) async fn update_template(
         db_error_response(DbError::InternalError).into_response()
     })?;
 
+    if payload
+        .source
+        .as_deref()
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("import"))
+    {
+        set_request_template_source(&state.db, payload.id, "import")
+            .await
+            .map_err(|e| db_error_response(e).into_response())?;
+    }
+
     Ok(success_response(
         serde_json::to_value(&template).unwrap_or(json!({})),
     ))
@@ -407,6 +488,8 @@ pub(crate) async fn delete_template(
     headers: HeaderMap,
     Json(payload): Json<DeleteTemplateRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, Response> {
+    let payload = sanitize_and_check_frontend_input(&state.sensitive, payload)?;
+
     let request_info = get_request_owner(&state.db, payload.id)
         .await
         .map_err(|e| {
@@ -535,6 +618,8 @@ pub(crate) async fn list_records(
     headers: HeaderMap,
     Json(payload): Json<RecordsListRequest>,
 ) -> Result<Json<ApiResponse<Vec<SharedRecordListItem>>>, Response> {
+    let payload = sanitize_and_check_frontend_input(&state.sensitive, payload)?;
+
     let owner_ip = resolve_client_ip(&headers, &addr);
 
     if payload.ids.is_empty() {
@@ -580,6 +665,8 @@ pub(crate) async fn generate(
     headers: HeaderMap,
     Json(payload): Json<GenerateRequest>,
 ) -> Result<Response, Response> {
+    let payload = sanitize_and_check_frontend_input(&state.sensitive, payload)?;
+
     let client_ip = resolve_client_ip(&headers, &addr);
 
     let user_agent = headers
@@ -1024,11 +1111,9 @@ pub(crate) async fn expand_worldview(
     headers: HeaderMap,
     Json(req): Json<ExpandWorldviewRequest>,
 ) -> Result<Response, Response> {
-    let client_ip = headers
-        .get("x-real-ip")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| addr.ip().to_string());
+    let req = sanitize_and_check_frontend_input(&state.sensitive, req)?;
+
+    let client_ip = resolve_client_ip(&headers, &addr);
 
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
@@ -1361,11 +1446,9 @@ pub(crate) async fn expand_character(
     headers: HeaderMap,
     Json(req): Json<ExpandCharacterRequest>,
 ) -> Result<Response, Response> {
-    let client_ip = headers
-        .get("x-real-ip")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| addr.ip().to_string());
+    let req = sanitize_and_check_frontend_input(&state.sensitive, req)?;
+
+    let client_ip = resolve_client_ip(&headers, &addr);
 
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)

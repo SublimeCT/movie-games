@@ -21,6 +21,7 @@ import {
   expandCharacter,
   expandSynopsis,
   generatePrompt,
+  importGameTemplate,
 } from '../api';
 import { randomThemes } from '../data/randomThemes';
 import { useGameState } from '../hooks/useGameState';
@@ -87,6 +88,7 @@ const isImportOpen = ref(false);
 const importTab = ref<'paste' | 'file'>('paste');
 const importText = ref('');
 const importError = ref('');
+const isImportSaving = ref(false);
 const isHelpOpen = ref(false);
 
 const isSettingsOpen = ref(false);
@@ -367,7 +369,9 @@ const handleExpandSynopsis = async () => {
         apiKeyRequired.value = true;
       }
       isRateLimitError.value =
-        e.code === 'TOO_MANY_REQUESTS' || e.status === 429;
+        e.code === 'TOO_MANY_REQUESTS' ||
+        e.code === 'API_KEY_REQUIRED' ||
+        e.code === 'API_KEY_REQUIRED_DAILY_LIMIT';
       // Show the actual error message from backend
       error.value = e.message || '扩写失败，请重试';
     } else {
@@ -411,7 +415,9 @@ const handleExpandCharacter = async () => {
         apiKeyRequired.value = true;
       }
       isRateLimitError.value =
-        e.code === 'TOO_MANY_REQUESTS' || e.status === 429;
+        e.code === 'TOO_MANY_REQUESTS' ||
+        e.code === 'API_KEY_REQUIRED' ||
+        e.code === 'API_KEY_REQUIRED_DAILY_LIMIT';
       // Show the actual error message from backend
       error.value = e.message || '角色生成失败';
     } else {
@@ -560,19 +566,57 @@ const parseImportData = (): MovieTemplate | null => {
       importError.value = '请粘贴或上传 JSON';
       return null;
     }
-    const data = JSON.parse(raw) as MovieTemplate;
-    // biome-ignore lint/suspicious/noExplicitAny: Dynamic data
-    const nodes = (data as any)?.nodes;
-    // biome-ignore lint/suspicious/noExplicitAny: Dynamic data
-    const endings = (data as any)?.endings;
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') {
+      importError.value = 'JSON 解析失败，请检查格式';
+      return null;
+    }
+
+    const obj = parsed as Record<string, unknown>;
+
+    const fromProcessedResponse =
+      (obj.processed_response && typeof obj.processed_response === 'object'
+        ? obj.processed_response
+        : null) ??
+      (obj.processedResponse && typeof obj.processedResponse === 'object'
+        ? obj.processedResponse
+        : null);
+
+    const fromGenerateResponse =
+      obj.template && typeof obj.template === 'object' ? obj.template : null;
+
+    const dataRaw = (fromProcessedResponse ??
+      fromGenerateResponse ??
+      obj) as unknown;
+    if (!dataRaw || typeof dataRaw !== 'object') {
+      importError.value = 'JSON 解析失败，请检查格式';
+      return null;
+    }
+
+    const data = dataRaw as MovieTemplate;
+
+    const nodes = (data as unknown as { nodes?: unknown }).nodes;
     if (!nodes || typeof nodes !== 'object') {
       importError.value = 'JSON 缺少 nodes';
       return null;
     }
+
+    const endings = (data as unknown as { endings?: unknown }).endings;
     if (!endings || typeof endings !== 'object') {
-      importError.value = 'JSON 缺少 endings';
-      return null;
+      (data as unknown as { endings: Record<string, unknown> }).endings = {};
     }
+
+    const reqId = obj.id;
+    if (
+      obj.template &&
+      typeof obj.template === 'object' &&
+      typeof reqId === 'string' &&
+      reqId.trim()
+    ) {
+      (data as unknown as { requestId?: string }).requestId = reqId.trim();
+    }
+
     return data;
   } catch {
     importError.value = 'JSON 解析失败，请检查格式';
@@ -598,6 +642,34 @@ const confirmImportDesign = () => {
   if (!data) return;
   isImportOpen.value = false;
   loadGameData(data, 'import', '/design');
+};
+
+const confirmImportSave = async () => {
+  if (isImportSaving.value) return;
+
+  if (!theme.value.trim()) {
+    importError.value = '请先填写游戏主题后再保存';
+    return;
+  }
+
+  const data = parseImportData();
+  if (!data) return;
+
+  isImportSaving.value = true;
+  importError.value = '';
+  try {
+    const saved = await importGameTemplate(data, theme.value);
+    isImportOpen.value = false;
+    loadGameData(saved, 'owner', '/design');
+  } catch (e: unknown) {
+    if (e instanceof ApiError) {
+      importError.value = e.message || '导入保存失败';
+      return;
+    }
+    importError.value = e instanceof Error ? e.message : '导入保存失败';
+  } finally {
+    isImportSaving.value = false;
+  }
 };
 
 const copyPrompt = async () => {
@@ -830,6 +902,14 @@ onMounted(() => {
             <div v-if="importError" class="mt-4 bg-red-500/10 border border-red-500/20 text-red-500 p-3 rounded-xl text-sm text-center">{{ importError }}</div>
 
             <div class="mt-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
+              <button
+                @click="confirmImportSave"
+                :disabled="isImportSaving"
+                class="relative inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-purple-600/30 border border-purple-500/30 text-white/90 font-bold hover:bg-purple-600/40 hover:shadow-[0_0_30px_rgba(168,85,247,0.25)] hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+              >
+                <span>{{ isImportSaving ? '保存中...' : '导入并保存' }}</span>
+              </button>
+
               <button
                 @click="confirmImportDesign"
                 :disabled="securityLocked"

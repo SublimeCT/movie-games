@@ -1,10 +1,14 @@
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use std::sync::Arc;
 use uuid::Uuid;
+
+use crate::sensitive::SensitiveFilter;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) db: PgPool,
+    pub(crate) sensitive: Arc<SensitiveFilter>,
 }
 
 pub(crate) async fn init_pool() -> Result<PgPool, sqlx::Error> {
@@ -17,13 +21,26 @@ pub(crate) async fn init_pool() -> Result<PgPool, sqlx::Error> {
 }
 
 pub(crate) async fn init_db(db: &PgPool) -> Result<(), sqlx::Error> {
-    // 运行数据库迁移
-    // 注意：在生产环境，建议通过 sqlx cli 或 CI/CD 流程执行迁移，
-    // 但为了简化部署，这里保留了自动迁移功能。
-    // 如果用户希望手动执行，可以注释掉此行，并手动运行 migrations 目录下的 SQL。
-    sqlx::migrate!("./migrations").run(db).await?;
-
-    Ok(())
+    let result = sqlx::migrate!("./migrations").run(db).await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => match e {
+            sqlx::migrate::MigrateError::VersionMismatch(version) => {
+                let allow = std::env::var("MOVIE_GAMES_ALLOW_MIGRATE_VERSION_MISMATCH")
+                    .unwrap_or_else(|_| "1".to_string());
+                if allow.trim() == "1" {
+                    eprintln!(
+                        "Database migration version mismatch detected ({}). Continuing because MOVIE_GAMES_ALLOW_MIGRATE_VERSION_MISMATCH=1.",
+                        version
+                    );
+                    Ok(())
+                } else {
+                    Err(sqlx::Error::Migrate(Box::new(e)))
+                }
+            }
+            _ => Err(sqlx::Error::Migrate(Box::new(e))),
+        },
+    }
 }
 
 // 数据库错误类型 - 用于与 handlers.rs 中的 ApiResponse 兼容
@@ -31,6 +48,7 @@ pub(crate) async fn init_db(db: &PgPool) -> Result<(), sqlx::Error> {
 pub(crate) enum DbError {
     DailyLimitExceeded,
     TooManyRequests,
+    ServiceBusy,
     // InvalidBaseUrl, // Unused
     InternalError,
 }
@@ -40,6 +58,7 @@ impl DbError {
         match self {
             DbError::DailyLimitExceeded => "API_KEY_REQUIRED_DAILY_LIMIT",
             DbError::TooManyRequests => "API_KEY_REQUIRED",
+            DbError::ServiceBusy => "SERVICE_BUSY",
             // DbError::InvalidBaseUrl => "INVALID_BASE_URL",
             DbError::InternalError => "INTERNAL_ERROR",
         }
@@ -49,6 +68,7 @@ impl DbError {
         match self {
             DbError::DailyLimitExceeded => "今日免费额度已用完 (30次/天)，请填写 API Key 继续使用",
             DbError::TooManyRequests => "当前并发较高，请填写 API Key 后重试",
+            DbError::ServiceBusy => "服务繁忙",
             // DbError::InvalidBaseUrl => "Invalid baseUrl",
             DbError::InternalError => "DB Error",
         }
@@ -72,11 +92,26 @@ pub(crate) async fn begin_glm_request_log(
         .await
         .map_err(|_| DbError::InternalError)?;
 
-    // Check daily limit (30 requests per IP per day)
+    if route == "/generate" {
+        let daily_total: i64 = sqlx::query_scalar(
+            "select count(*) from glm_requests where route = $1 and created_at > current_date",
+        )
+        .bind(route)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| DbError::InternalError)?;
+
+        if daily_total >= 60 {
+            return Err(DbError::ServiceBusy);
+        }
+    }
+
+    // Check daily limit (30 requests per IP per day) - only applies if not using own API Key
     let daily_count: i64 = sqlx::query_scalar(
-        "select count(*) from glm_requests where client_ip = $1 and created_at > current_date",
+        "select count(*) from glm_requests where client_ip = $1 and route = $2 and created_at > current_date",
     )
     .bind(client_ip)
+    .bind(route)
     .fetch_one(&mut *tx)
     .await
     .map_err(|_| DbError::InternalError)?;
@@ -88,9 +123,10 @@ pub(crate) async fn begin_glm_request_log(
     // Check recent request frequency (2 requests per 5 minutes per IP)
     // Only applies if not using own API Key
     let active: i64 = sqlx::query_scalar(
-        "select count(*) from glm_requests where client_ip = $1 and created_at > now() - interval '5 minutes'",
+        "select count(*) from glm_requests where client_ip = $1 and route = $2 and created_at > now() - interval '5 minutes'",
     )
     .bind(client_ip)
+    .bind(route)
     .fetch_one(&mut *tx)
     .await
     .map_err(|_| DbError::InternalError)?;
@@ -240,19 +276,72 @@ pub(crate) async fn upsert_shared_record(
     request_id: Uuid,
     shared_ip: &str,
     shared_user_agent: Option<&str>,
-) -> Result<Uuid, sqlx::Error> {
+) -> Result<Uuid, DbError> {
+    let mut tx = db.begin().await.map_err(|_| DbError::InternalError)?;
+
+    let _ = sqlx::query("select pg_advisory_xact_lock($1)")
+        .bind(9002i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| DbError::InternalError)?;
+
+    let existing: Option<Uuid> =
+        sqlx::query_scalar("select id from shared_records where request_id = $1")
+            .bind(request_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| DbError::InternalError)?;
+
+    if let Some(id) = existing {
+        sqlx::query(
+            "update shared_records set shared_ip = $2, shared_user_agent = $3 where request_id = $1",
+        )
+        .bind(request_id)
+        .bind(shared_ip)
+        .bind(shared_user_agent)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| DbError::InternalError)?;
+
+        tx.commit().await.map_err(|_| DbError::InternalError)?;
+        return Ok(id);
+    }
+
+    let daily_total: i64 =
+        sqlx::query_scalar("select count(*) from shared_records where shared_at > current_date")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| DbError::InternalError)?;
+
+    if daily_total >= 20 {
+        return Err(DbError::ServiceBusy);
+    }
+
+    let daily_ip: i64 = sqlx::query_scalar(
+        "select count(*) from shared_records where shared_ip = $1 and shared_at > current_date",
+    )
+    .bind(shared_ip)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| DbError::InternalError)?;
+
+    if daily_ip >= 3 {
+        return Err(DbError::ServiceBusy);
+    }
+
     let id = Uuid::new_v4();
     let row: (Uuid,) = sqlx::query_as(
-        "insert into shared_records (id, request_id, shared_ip, shared_user_agent) values ($1, $2, $3, $4) \
-         on conflict (request_id) do update set shared_at = now(), shared_ip = excluded.shared_ip, shared_user_agent = excluded.shared_user_agent \
-         returning id",
+        "insert into shared_records (id, request_id, shared_ip, shared_user_agent) values ($1, $2, $3, $4) returning id",
     )
     .bind(id)
     .bind(request_id)
     .bind(shared_ip)
     .bind(shared_user_agent)
-    .fetch_one(db)
-    .await?;
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| DbError::InternalError)?;
+
+    tx.commit().await.map_err(|_| DbError::InternalError)?;
 
     Ok(row.0)
 }
@@ -330,4 +419,41 @@ pub(crate) async fn list_shared_records_by_ids(
     .await?;
 
     Ok(rows)
+}
+
+pub(crate) async fn create_imported_request(
+    db: &PgPool,
+    client_ip: &str,
+    user_agent: &str,
+    request_payload: serde_json::Value,
+    processed_response: serde_json::Value,
+) -> Result<Uuid, DbError> {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "insert into glm_requests (id, client_ip, user_agent, route, status, request_payload, glm_prompt, processed_response, template_source) values ($1, $2, $3, '/import', 'success', $4, '[import]', $5, 'import')",
+    )
+    .bind(id)
+    .bind(client_ip)
+    .bind(user_agent)
+    .bind(request_payload)
+    .bind(processed_response)
+    .execute(db)
+    .await
+    .map_err(|_| DbError::InternalError)?;
+
+    Ok(id)
+}
+
+pub(crate) async fn set_request_template_source(
+    db: &PgPool,
+    id: Uuid,
+    source: &str,
+) -> Result<(), DbError> {
+    sqlx::query("update glm_requests set template_source = $1, updated_at = now() where id = $2")
+        .bind(source)
+        .bind(id)
+        .execute(db)
+        .await
+        .map_err(|_| DbError::InternalError)?;
+    Ok(())
 }

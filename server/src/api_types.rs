@@ -9,30 +9,40 @@ pub(crate) struct GenerateResponse {
     pub(crate) template: MovieTemplate,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ShareRequest {
     pub(crate) id: Uuid,
     pub(crate) shared: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RecordsListRequest {
     pub(crate) ids: Vec<Uuid>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateTemplateRequest {
     pub(crate) id: Uuid,
     pub(crate) template: MovieTemplate,
+    #[serde(default)]
+    pub(crate) source: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeleteTemplateRequest {
     pub(crate) id: Uuid,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportTemplateRequest {
+    pub(crate) template: MovieTemplate,
+    #[serde(default)]
+    pub(crate) theme: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Serialize, Clone)]

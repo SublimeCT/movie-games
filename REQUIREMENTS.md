@@ -5,6 +5,11 @@
 > 本文档严格基于当前代码库 (`front/`, `server/`) 编写，列出所有实际存在的页面、接口及业务逻辑。
 > 最后更新时间: 2026-01-01
 
+## 0. 工程约束
+
+- 前端必须通过 `pnpm -C front build`（包含 `vue-tsc -b` 类型构建检查）
+- 后端启动会自动执行 SQLx migrations；若遇到已应用迁移被修改导致的 `VersionMismatch`，默认允许继续启动（可用 `MOVIE_GAMES_ALLOW_MIGRATE_VERSION_MISMATCH=0` 强制失败）
+
 ## 1. 产品页面清单 (Page Inventory)
 
 ### 1.1 首页 (Home Page)
@@ -30,8 +35,11 @@
     *   **连接设置 (Settings)**: 配置 GLM API Key, Base URL, Model。支持校验 URL 格式。
         *   **安全锁判定**: 当 Base URL 或 Model 不等于默认值时，触发“数据安全锁”（API Key 的变化不触发）。
         *   **影响**: 触发后将禁用“分享/设计”相关入口（例如导入弹窗的“导入并设计”按钮）。
-    *   **导入存档 (Import)**: 支持粘贴 JSON 文本或上传 JSON 文件导入 `MovieTemplate` 数据。
+    *   **导入存档 (Import)**: 支持粘贴 JSON 文本或上传 JSON 文件导入剧情数据。
+        *   支持的 JSON 格式：`MovieTemplate`（含或不含 `requestId`）、数据库字段 `processed_response`（即不含 `requestId` 的 `MovieTemplate`）、以及后端生成接口返回的 `{ id, template }` 包装结构。
         *   导入后可选择：直接进入游玩(`/game`) 或进入剧情设计器(`/design`)（若触发数据安全锁则禁用“导入并设计”）。
+        *   **本地输入回填**: 选择“导入并游玩/导入并设计”后，会把导入 JSON 的 `meta/characters` 回填到本地向导存储（`mg_theme/mg_synopsis/mg_genres/mg_characters`），避免后续页面读取到旧的首页输入。
+        *   支持“导入并保存”：会调用后端 `POST /import` 生成一条数据库记录并返回 `requestId`；保存前会校验首页必填字段（主题必须填写）。
     *   **帮助 (Help)**: 显示设计理念和操作技巧。
 
 **代码级差异说明**:
@@ -92,6 +100,7 @@
     *   导入模式(`mg_play_entry=import`)下禁止在线分享，并且不显示分享入口与分享链接。
 8.  **导出**:
     *   仅支持导出为 JSON（复制 JSON / 下载 JSON）。
+    *   导出内容为数据库 `processed_response` 同结构：导出的顶层为 `MovieTemplate`（不包含 `requestId`），可直接用于首页/设计器导入。
 9.  **操作**:
     *   **重新开始**: 回到首页重置游戏。
     *   **再玩一次**: 回到当前游戏的开始节点。
@@ -130,14 +139,16 @@
     *   主题、角色阵容等字段与首页保持一致，并同步保存到本地。
     *   **显示一致性修复**: 进入设计器后会从当前剧情模板 (`MovieTemplate.meta/characters`) 回填这些字段到本地存储，避免显示到其他剧本或旧的首页向导输入。
     *   **设计页只读限制**: “剧情简介”“剧情类型”在设计页显示但禁止修改。
+    *   **角色性别选择**: 角色性别必须通过下拉选择（男 / 女 / 其他），禁止自由输入。
     *   **角色头像上传**: 角色阵容支持上传图片并在前端转为 base64 字符串保存（并尝试按角色名同步到模板角色的 `avatarPath`）。
     *   **角色删除限制**: 若角色名称在任意节点的出场角色列表中被引用，则在设计页禁止删除。
 2.  **编辑剧情模板 (草稿机制)**:
     *   以 `mg_active_game_data` 为基底生成草稿并可编辑。
     *   **保存**: 创建者模式且存在 `requestId` 时，会调用 `POST /template/update` 将草稿写回数据库，同时强制刷新本地 `mg_active_game_data`，确保刷新/再次进入设计不会回到旧数据；导入模式或缺少 `requestId` 时仅保存到本地浏览器。
     *   **保存并游玩**: 执行与“保存”一致的持久化逻辑后，清理本次游玩状态并跳转 `/game`。
-    *   **分享 (仅创建者可见)**: 当且仅当创建者模式且存在 `requestId` 时，工具栏显示“分享/取消分享”按钮；通过 `GET /records/meta/:requestId` 刷新分享状态，通过 `POST /share` 切换分享状态；分享成功会弹出链接弹窗并将 `sharedRecordId` 写入 `mg_record_ids`（供历史记录页使用）；触发“数据安全锁”时禁用分享。
-    *   **导出**: 设计页提供“导出”按钮，弹窗展示完整 JSON，并支持复制 / 下载（交互与结局页一致）。
+    *   **分享 (仅创建者可见)**: 当且仅当创建者模式且存在 `requestId` 时，工具栏显示“分享/取消分享”按钮；通过 `GET /records/meta/:requestId` 判断当前是否为创建者 (owner) 以及分享状态，通过 `POST /share` 切换分享状态；分享成功会弹出链接弹窗并将 `sharedRecordId` 写入 `mg_record_ids`（供历史记录页使用）；触发“数据安全锁”时禁用分享。
+    *   **导入并覆盖**: 设计页提供“导入”按钮，支持粘贴/上传 JSON 覆盖当前草稿；创建者模式下支持“覆盖并保存”将内容写回数据库，并标记该记录 `template_source=import`。
+    *   **导出**: 设计页提供“导出”按钮，弹窗展示完整 JSON，并支持复制 / 下载（交互与结局页一致）。导出 JSON 与数据库 `processed_response` 数据结构一致（顶层为 `MovieTemplate`，不包含 `requestId`），并可直接在首页/设计器导入。
     *   **工具栏按钮可读性**: “新增节点 / 保存 / 分享 / 导出”按钮文本不换行；禁用态具备明显的透明度与鼠标样式反馈。
 3.  **节点树编辑**:
     *   采用与结局页一致的 SVG `treeGraph` 分层布局展示（可拖拽平移、滚轮缩放、自适应居中）。
@@ -238,6 +249,16 @@
 
     *   **characters 的 key**: 使用角色名 (`name`) 作为 key，而不是 `id`。
     *   **role 和 background**: 不再相同，`role` 保留 AI 生成的值，`background` 仅在为空时使用前端传入的 `description`。
+
+### 2.2.1 剧情导入并保存 (Import)
+*   **URL**: `POST /import`
+*   **功能**: 接收前端导入的 `MovieTemplate`，进行节点/结局/图结构与好感度等数据清理后保存到数据库（写入 `glm_requests.processed_response`，并标记 `template_source=import`），返回可编辑的 `requestId`。
+*   **参数**:
+    *   `template` (MovieTemplate): 需要导入的完整剧情模板（必须包含 `nodes` 与 `endings`）。
+    *   `theme` (String, 可选): 首页主题字段（仅用于随请求一并记录，不影响模板处理）。
+*   **返回**:
+    *   `id` (UUID): 新生成的记录 ID（前端会写入为 `requestId`）。
+    *   `template` (MovieTemplate): 清理后的剧情模板。
 
 ### 2.3 生成提示词 (Generate Prompt)
 *   **URL**: `POST /generate/prompt`
@@ -343,8 +364,28 @@
 *   **UI**: 前端模板中 **未渲染** 自由模式的任何入口，且向导模式表单无条件显示。
 *   **结论**: 自由模式代码是死代码 (Dead Code)，用户无法使用。
 
-### 3.3 接口限流
-*   **逻辑**: 前端统一处理 `TOO_MANY_REQUESTS` (状态码 429 或 错误码 1305)，提示用户配置自己的 API Key。
+### 3.3 接口限流与配额
+*   **后端配额 (数据库事务 + advisory lock 防并发穿透)**:
+    *   `/generate` 全站每日最多写入 60 条 `glm_requests`（按 `created_at > current_date` 统计），超出返回 `SERVICE_BUSY`。
+    *   免费额度（仅当未使用用户自带 API Key 时生效）:
+        *   同一 IP 同一路由每日最多 30 次，超出返回 `API_KEY_REQUIRED_DAILY_LIMIT`。
+        *   同一 IP 同一路由 5 分钟内最多 2 次，超出返回 `API_KEY_REQUIRED`。
+    *   `/share`（创建/更新 `shared_records`）:
+        *   全站每日最多 20 条分享记录，超出返回 `SERVICE_BUSY`。
+        *   同一 IP 每日最多 3 条分享记录，超出返回 `SERVICE_BUSY`。
+*   **前端体验**:
+    *   对 `API_KEY_REQUIRED` / `API_KEY_REQUIRED_DAILY_LIMIT` / `TOO_MANY_REQUESTS` 等错误会提示用户并引导配置自己的 API Key。
+    *   对 `SERVICE_BUSY` 会提示用户“服务繁忙”。
+
+### 3.3.1 敏感词过滤 (Sensitive Content)
+*   **覆盖范围**: 后端对所有前端请求 payload 统一执行敏感词过滤（`/generate`、`/import`、`/template/update`、`/share` 等）。
+*   **处理方式**:
+    *   命中敏感词会被替换为 `*`（按字符逐位替换）。
+    *   单次请求中命中敏感内容数量 `> 3` 时，直接拒绝请求并返回错误码 `SENSITIVE_CONTENT`，错误信息为：`该剧情存在不当内容, 已拒绝服务`。
+    *   出于安全考虑，会跳过对 `apiKey` / `baseUrl` / `model` / `size` 等字段的过滤。
+*   **词库来源**:
+    *   环境变量 `SENSITIVE_WORDS`（支持逗号/换行分隔）。
+    *   文件 `SENSITIVE_WORDS_PATH`（默认 `./sensitive_words.txt`，支持注释行 `#`）。
 
 ### 3.4 节点 ID 归一化 (Node ID Normalization)
 *   **目的**: 兼容旧数据/旧 Prompt 输出的 `node_`/`n_` 前缀，同时尽量收敛为“纯数字 key + start”的规范。

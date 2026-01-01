@@ -77,6 +77,111 @@ export function useGameState() {
     }
   });
 
+  /**
+   * 首页“角色阵容”的本地输入结构（轻量版），用于从模板回填到本地存储。
+   */
+  type CharacterInputLite = {
+    name: string;
+    description: string;
+    gender: string;
+    isMain: boolean;
+    avatarPath?: string;
+  };
+
+  /**
+   * 将模板 meta.genre 的字符串解析为可用于本地存储的标签数组。
+   */
+  const parseGenreList = (genre: string): string[] => {
+    const raw = String(genre || '').trim();
+    if (!raw) return [];
+
+    return Array.from(
+      new Set(
+        raw
+          .split(/\s*(?:\/|\||,|，|、|;|；)\s*/g)
+          .map((x) => x.trim())
+          .filter(Boolean),
+      ),
+    );
+  };
+
+  /**
+   * 根据模板角色的 key/name/role 估算“主角”优先级。
+   */
+  const scoreTemplateCharacter = (
+    key: string,
+    c: MovieTemplate['characters'][string],
+  ) => {
+    const k = String(key || '').toLowerCase();
+    const name = String(c?.name || '').toLowerCase();
+    const role = String(c?.role || '').toLowerCase();
+
+    let score = 0;
+    if (/player|protagonist|main/.test(k)) score += 5;
+    if (name.includes('主角') || name === '我') score += 6;
+    if (role.includes('主角') || role.includes('protagonist')) score += 3;
+    if (typeof c?.age === 'number' && c.age > 0) score += 1;
+
+    return score;
+  };
+
+  /**
+   * 导入 JSON 进入游玩/设计时，将模板中的主题/简介/类型/角色回填到本地向导存储。
+   */
+  const persistHomeInputsFromTemplate = (template: MovieTemplate) => {
+    try {
+      const theme = String(
+        template.meta?.logline || template.title || '',
+      ).trim();
+      const synopsis = String(template.meta?.synopsis || '').trim();
+      const genres = parseGenreList(String(template.meta?.genre || ''));
+
+      const entries = Object.entries(template.characters || {});
+      const scored = entries
+        .map(([key, c]) => ({ key, c, score: scoreTemplateCharacter(key, c) }))
+        .sort((a, b) => b.score - a.score);
+
+      const mainKey = scored[0]?.key ?? '';
+
+      const chars: CharacterInputLite[] = entries
+        .map(([key, c]) => {
+          const name = String(c?.name || '').trim();
+          const gender = String(c?.gender || '其他').trim() || '其他';
+          const descriptionParts = [
+            String(c?.role || '').trim(),
+            String(c?.background || '').trim(),
+          ].filter(Boolean);
+          const description = descriptionParts.join('，');
+
+          return {
+            name: name || '角色',
+            gender,
+            description,
+            isMain: key === mainKey,
+            avatarPath: c?.avatarPath || undefined,
+          };
+        })
+        .filter((c) => Boolean(String(c.name || '').trim()));
+
+      if (chars.length === 0) {
+        chars.push({
+          name: '主角',
+          description: '故事的核心人物',
+          gender: '男',
+          isMain: true,
+        });
+      } else if (!chars.some((c) => c.isMain)) {
+        const first = chars[0];
+        if (first) chars[0] = { ...first, isMain: true };
+      }
+
+      localStorage.setItem('mg_theme', theme);
+      localStorage.setItem('mg_synopsis', synopsis);
+      localStorage.setItem('mg_genres', JSON.stringify(genres));
+      localStorage.setItem('mg_characters', JSON.stringify(chars));
+    } catch {}
+  };
+
   const loadGameData = async (
     data: MovieTemplate,
     entry: 'owner' | 'import' = 'owner',
@@ -99,6 +204,10 @@ export function useGameState() {
             return cloned;
           })()
         : data;
+
+    if (entry === 'import') {
+      persistHomeInputsFromTemplate(persistedData);
+    }
 
     localStorage.setItem('mg_active_game_data', JSON.stringify(persistedData));
 

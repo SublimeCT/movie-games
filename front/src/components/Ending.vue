@@ -885,12 +885,20 @@ const showJsonModal = ref(false);
  * @returns {string} Formatted JSON string
  */
 const jsonContent = computed(() => {
-  // 导出完整剧情信息，可以直接在主页导入
   if (!data.value) return '{}';
-  // 确保包含所有必要字段，特别是 requestId（如果有）
-  // 深拷贝以避免副作用，虽然 JSON.stringify 本身不会修改原对象
-  const dataToExport = { ...data.value };
-  return JSON.stringify(dataToExport, null, 2);
+
+  const cloned = JSON.parse(JSON.stringify(data.value)) as Record<
+    string,
+    unknown
+  >;
+  delete cloned.requestId;
+
+  const endings = cloned.endings;
+  if (!endings || typeof endings !== 'object') {
+    cloned.endings = {};
+  }
+
+  return JSON.stringify(cloned, null, 2);
 });
 
 /**

@@ -58,12 +58,41 @@ onMounted(async () => {
 
   try {
     const params = JSON.parse(paramsStr);
+
+    /**
+     * 兜底从本地存储读取角色阵容，避免生成请求遗漏角色信息。
+     */
+    const readCharactersFromStorage = () => {
+      try {
+        const raw = localStorage.getItem('mg_characters');
+        const v = raw ? (JSON.parse(raw) as unknown) : [];
+        return Array.isArray(v) ? v : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const characters =
+      Array.isArray(params.characters) && params.characters.length > 0
+        ? params.characters
+        : readCharactersFromStorage();
+
     const request: GenerateRequest = {
       mode: 'wizard',
       theme: params.theme,
       synopsis: params.synopsis,
       genre: params.genre,
-      characters: params.characters,
+      characters:
+        Array.isArray(characters) && characters.length > 0
+          ? characters
+          : [
+              {
+                name: '主角',
+                description: '故事的核心人物',
+                gender: '男',
+                isMain: true,
+              },
+            ],
       language: params.language,
       size: params.size,
       apiKey: params.apiKey,

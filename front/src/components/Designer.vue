@@ -6,6 +6,7 @@ import {
   Download,
   FileJson,
   Home as HomeIcon,
+  Import as ImportIcon,
   Lock,
   Pencil,
   Plus,
@@ -18,6 +19,7 @@ import {
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
+  ApiError,
   getSharedGame,
   getSharedRecordMeta,
   shareGame,
@@ -176,6 +178,221 @@ const isSaving = ref(false);
 
 const showJsonModal = ref(false);
 
+const showImportModal = ref(false);
+const importTab = ref<'paste' | 'file'>('paste');
+const importText = ref('');
+const importError = ref('');
+const isImportApplying = ref(false);
+
+const pendingTemplateSource = ref<string | null>(null);
+
+/**
+ * 打开导入弹窗。
+ */
+const openImportModal = () => {
+  importTab.value = 'paste';
+  importText.value = '';
+  importError.value = '';
+  isImportApplying.value = false;
+  showImportModal.value = true;
+};
+
+/**
+ * 关闭导入弹窗。
+ */
+const closeImportModal = () => {
+  showImportModal.value = false;
+};
+
+/**
+ * 解析导入 JSON，返回 MovieTemplate。
+ */
+const parseImportData = (): MovieTemplate | null => {
+  importError.value = '';
+  try {
+    const raw = importText.value.trim();
+    if (!raw) {
+      importError.value = '请粘贴或上传 JSON';
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') {
+      importError.value = 'JSON 解析失败，请检查格式';
+      return null;
+    }
+
+    const obj = parsed as Record<string, unknown>;
+
+    const fromProcessedResponse =
+      (obj.processed_response && typeof obj.processed_response === 'object'
+        ? obj.processed_response
+        : null) ??
+      (obj.processedResponse && typeof obj.processedResponse === 'object'
+        ? obj.processedResponse
+        : null);
+
+    const fromGenerateResponse =
+      obj.template && typeof obj.template === 'object' ? obj.template : null;
+
+    const dataRaw = (fromProcessedResponse ??
+      fromGenerateResponse ??
+      obj) as unknown;
+    if (!dataRaw || typeof dataRaw !== 'object') {
+      importError.value = 'JSON 解析失败，请检查格式';
+      return null;
+    }
+
+    const data = dataRaw as MovieTemplate;
+    const nodes = (data as unknown as { nodes?: unknown }).nodes;
+    if (!nodes || typeof nodes !== 'object') {
+      importError.value = 'JSON 缺少 nodes';
+      return null;
+    }
+
+    const endings = (data as unknown as { endings?: unknown }).endings;
+    if (!endings || typeof endings !== 'object') {
+      (data as unknown as { endings: Record<string, unknown> }).endings = {};
+    }
+
+    const reqId = obj.id;
+    if (
+      obj.template &&
+      typeof obj.template === 'object' &&
+      typeof reqId === 'string' &&
+      reqId.trim()
+    ) {
+      (data as unknown as { requestId?: string }).requestId = reqId.trim();
+    }
+
+    return data;
+  } catch {
+    importError.value = 'JSON 解析失败，请检查格式';
+    return null;
+  }
+};
+
+/**
+ * 读取 JSON 文件，并写入导入文本框。
+ */
+const onImportFile = (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+
+  importError.value = '';
+  const reader = new FileReader();
+  reader.onload = () => {
+    importText.value = String(reader.result || '');
+  };
+  reader.onerror = () => {
+    importError.value = '读取文件失败';
+  };
+  reader.readAsText(file);
+};
+
+/**
+ * 将导入的模板覆盖到当前设计器数据（保留当前 requestId 归属）。
+ */
+const overwriteWithImportedTemplate = async (data: MovieTemplate) => {
+  const imported = cloneJson(data);
+
+  if (playEntry.value === 'import') {
+    imported.requestId = '';
+  } else {
+    const currentRequestId = String(draft.value?.requestId || '').trim();
+    if (currentRequestId) imported.requestId = currentRequestId;
+  }
+
+  clearRunState();
+  await persistActiveGameData(imported);
+  draft.value = cloneJson(imported);
+  dirty.value = true;
+
+  if (
+    playEntry.value === 'owner' &&
+    String(imported.requestId || '').trim() !== ''
+  ) {
+    pendingTemplateSource.value = 'import';
+  }
+
+  hydrateLocalInputsFromDraft(imported);
+};
+
+/**
+ * 导入并覆盖（仅本地）。
+ */
+const confirmImportOverwriteLocal = async () => {
+  if (isImportApplying.value) return;
+  const data = parseImportData();
+  if (!data) return;
+
+  isImportApplying.value = true;
+  try {
+    await overwriteWithImportedTemplate(data);
+    closeImportModal();
+    showToast('已导入并覆盖当前剧情', 'success');
+  } finally {
+    isImportApplying.value = false;
+  }
+};
+
+/**
+ * 导入、覆盖并保存到数据库（仅创建者模式）。
+ */
+const confirmImportOverwriteSave = async () => {
+  if (isImportApplying.value) return;
+
+  if (securityLocked.value) {
+    importError.value =
+      '检测到本地模型配置已被修改（Base URL / Model）。为确保数据安全，已禁用设计与分享功能。请先在首页设置中恢复默认配置。';
+    return;
+  }
+
+  if (!canEdit.value || playEntry.value !== 'owner') {
+    importError.value = '当前无保存权限，无法覆盖并保存';
+    return;
+  }
+
+  const requestId = String(draft.value?.requestId || '').trim();
+  if (!requestId) {
+    importError.value = '当前没有可保存的数据库记录，请先生成或从记录进入';
+    return;
+  }
+
+  const data = parseImportData();
+  if (!data) return;
+
+  isImportApplying.value = true;
+  importError.value = '';
+  try {
+    await overwriteWithImportedTemplate(data);
+
+    const current = draft.value;
+    if (!current) {
+      importError.value = '当前没有可编辑的数据，请先生成或导入剧情。';
+      return;
+    }
+
+    const saved = await updateGameTemplate(requestId, current, 'import');
+    pendingTemplateSource.value = null;
+    draft.value = cloneJson(saved);
+    await persistActiveGameData(saved);
+    hydrateLocalInputsFromDraft(saved);
+    dirty.value = false;
+    closeImportModal();
+    showToast('已覆盖并保存到数据库', 'success');
+  } catch (e: unknown) {
+    if (e instanceof ApiError) {
+      importError.value = e.message || '覆盖保存失败';
+      return;
+    }
+    importError.value = e instanceof Error ? e.message : '覆盖保存失败';
+  } finally {
+    isImportApplying.value = false;
+  }
+};
+
 const isShared = ref(false);
 const shareLoading = ref(false);
 const showShareModal = ref(false);
@@ -305,7 +522,16 @@ const exportData = computed(() => {
 const jsonContent = computed(() => {
   const data = exportData.value;
   if (!data) return '{}';
-  return JSON.stringify({ ...data }, null, 2);
+
+  const cloned = cloneJson(data);
+  delete (cloned as unknown as { requestId?: string }).requestId;
+
+  const endings = (cloned as unknown as { endings?: unknown }).endings;
+  if (!endings || typeof endings !== 'object') {
+    (cloned as unknown as { endings: Record<string, unknown> }).endings = {};
+  }
+
+  return JSON.stringify(cloned, null, 2);
 });
 
 const copyJson = async () => {
@@ -1386,15 +1612,21 @@ const applyDraft = async (opts?: ApplyDraftOptions) => {
     playEntry.value !== 'import' &&
     requestId !== '' &&
     canEdit.value &&
-    (Boolean(opts?.forceDbSave) || dirty.value);
+    (Boolean(opts?.forceDbSave) ||
+      dirty.value ||
+      pendingTemplateSource.value !== null);
 
   if (shouldDbSave) {
     isSaving.value = true;
     try {
-      const saved = await updateGameTemplate(requestId, d);
+      const saved = await updateGameTemplate(
+        requestId,
+        d,
+        pendingTemplateSource.value || undefined,
+      );
+      pendingTemplateSource.value = null;
       draft.value = cloneJson(saved);
       await persistActiveGameData(saved);
-      // 保存成功后同步本地输入（theme, characters 等）
       hydrateLocalInputsFromDraft(saved);
       dirty.value = false;
       showToast('已保存到数据库', 'success');
@@ -1402,6 +1634,10 @@ const applyDraft = async (opts?: ApplyDraftOptions) => {
     } catch (e: unknown) {
       console.error(e);
       await applyDraftLocal();
+      if (e instanceof ApiError) {
+        showToast(e.message || '同步数据库失败', 'error');
+        return false;
+      }
       showToast('已保存到本地，但同步数据库失败', 'error');
       return false;
     } finally {
@@ -1721,6 +1957,16 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
           </button>
 
           <button
+            v-if="canEdit"
+            @click="openImportModal"
+            class="group relative inline-flex items-center justify-center px-4 py-3 rounded-2xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md transition-all gap-2 overflow-hidden"
+          >
+            <div class="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+            <ImportIcon class="w-4 h-4 relative z-10" />
+            <span class="relative z-10 whitespace-nowrap">导入</span>
+          </button>
+
+          <button
             @click="showJsonModal = true"
             class="group relative inline-flex items-center justify-center px-4 py-3 rounded-2xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md transition-all gap-2 overflow-hidden"
           >
@@ -1906,11 +2152,14 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                               class="w-full px-3 py-2.5 rounded-xl border border-white/10 bg-black/35 text-white/90 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
                               placeholder="名字"
                             />
-                            <input
+                            <select
                               v-model="c.gender"
                               class="w-full px-3 py-2.5 rounded-xl border border-white/10 bg-black/35 text-white/90 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
-                              placeholder="性别"
-                            />
+                            >
+                              <option value="男">男</option>
+                              <option value="女">女</option>
+                              <option value="其他">其他</option>
+                            </select>
                           </div>
 
                           <textarea
@@ -2554,6 +2803,106 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
     </Transition>
 
     <Teleport to="body">
+      <div
+        v-if="showImportModal"
+        class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+        @click.self="closeImportModal"
+      >
+        <div class="relative w-full max-w-3xl rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+          <div class="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/5">
+            <div class="flex items-center gap-2">
+              <ImportIcon class="w-5 h-5 text-cyan-300" />
+              <span class="font-bold text-white/90">导入并覆盖剧情</span>
+            </div>
+            <button @click="closeImportModal" class="text-white/50 hover:text-white transition">
+              <X class="w-5 h-5" />
+            </button>
+          </div>
+
+          <div class="flex-1 overflow-auto p-6 space-y-4 custom-scrollbar">
+            <div class="flex items-center gap-2">
+              <button
+                @click="importTab = 'paste'"
+                :class="[
+                  'px-4 py-2 rounded-full text-sm font-semibold border transition-all',
+                  importTab === 'paste'
+                    ? 'bg-purple-600/30 border-purple-500/40 text-white'
+                    : 'bg-black/30 border-white/10 text-white/60 hover:text-white hover:border-purple-500/30',
+                ]"
+              >
+                手动输入
+              </button>
+              <button
+                @click="importTab = 'file'"
+                :class="[
+                  'px-4 py-2 rounded-full text-sm font-semibold border transition-all',
+                  importTab === 'file'
+                    ? 'bg-purple-600/30 border-purple-500/40 text-white'
+                    : 'bg-black/30 border-white/10 text-white/60 hover:text-white hover:border-purple-500/30',
+                ]"
+              >
+                上传文件
+              </button>
+            </div>
+
+            <div v-if="importTab === 'paste'" class="space-y-3">
+              <textarea
+                v-model="importText"
+                rows="12"
+                class="w-full bg-black/50 border border-neutral-800 rounded-xl px-4 py-3 text-sm text-white/90 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none placeholder-neutral-600 transition-all resize-none font-mono leading-relaxed"
+                placeholder="粘贴之前导出的 MovieTemplate JSON"
+              />
+            </div>
+
+            <div v-else class="space-y-3">
+              <input
+                type="file"
+                accept="application/json,.json"
+                @change="onImportFile"
+                class="block w-full text-sm text-white/70 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-600/30 file:text-white hover:file:bg-purple-600/40"
+              />
+              <textarea
+                v-model="importText"
+                rows="10"
+                class="w-full bg-black/50 border border-neutral-800 rounded-xl px-4 py-3 text-sm text-white/90 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none placeholder-neutral-600 transition-all resize-none font-mono leading-relaxed"
+                placeholder="文件内容会显示在这里"
+              />
+            </div>
+
+            <div v-if="importError" class="bg-red-500/10 border border-red-500/20 text-red-500 p-3 rounded-xl text-sm text-center">{{ importError }}</div>
+
+            <div class="rounded-xl border border-white/10 bg-black/35 px-4 py-3 text-xs text-white/55 leading-relaxed">
+              导入会直接覆盖当前设计器中的剧情数据；创建者模式下可选择“覆盖并保存”将内容写回数据库。
+            </div>
+          </div>
+
+          <div class="p-6 border-t border-white/10 bg-white/5 flex flex-col sm:flex-row justify-end gap-3">
+            <button
+              @click="confirmImportOverwriteSave"
+              :disabled="isImportApplying || securityLocked || !canEdit || playEntry !== 'owner'"
+              class="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-purple-600/30 border border-purple-500/30 text-white/90 font-bold hover:bg-purple-600/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span>{{ isImportApplying ? '处理中...' : '覆盖并保存' }}</span>
+            </button>
+
+            <button
+              @click="confirmImportOverwriteLocal"
+              :disabled="isImportApplying || !canEdit"
+              class="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-black/35 border border-white/10 text-white/90 font-bold hover:bg-black/55 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span>{{ isImportApplying ? '处理中...' : '仅覆盖到本地' }}</span>
+            </button>
+
+            <button
+              @click="closeImportModal"
+              class="px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white/80 font-medium transition-colors"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div
         v-if="showJsonModal"
         class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"

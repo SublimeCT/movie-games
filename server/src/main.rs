@@ -8,6 +8,7 @@ mod glm;
 mod handlers;
 mod images;
 mod prompt;
+mod sensitive;
 mod template;
 #[cfg(test)]
 mod tests_repro;
@@ -24,7 +25,12 @@ async fn main() {
         .await
         .expect("Failed to init database");
 
-    let state = db::AppState { db: db_pool };
+    let sensitive = std::sync::Arc::new(sensitive::SensitiveFilter::from_env());
+
+    let state = db::AppState {
+        db: db_pool,
+        sensitive,
+    };
     let app = app::build_app(state);
 
     // 监听 0.0.0.0 以允许外部访问 (部署时的常见坑)

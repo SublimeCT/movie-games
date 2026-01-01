@@ -8,7 +8,9 @@
 ## 0. 工程约束
 
 - 前端必须通过 `pnpm -C front build`（包含 `vue-tsc -b` 类型构建检查）
-- 后端启动会自动执行 SQLx migrations；若遇到已应用迁移被修改导致的 `VersionMismatch`，默认允许继续启动（可用 `MOVIE_GAMES_ALLOW_MIGRATE_VERSION_MISMATCH=0` 强制失败）
+- 后端启动会自动执行 SQLx migrations
+- 已经应用到数据库的迁移文件视为不可变；任何结构变更必须新增迁移文件，禁止修改已应用迁移
+- 若出现 `VersionMismatch`，必须通过“恢复旧迁移文件原内容 + 新增迁移承载变更”修复；`MOVIE_GAMES_ALLOW_MIGRATE_VERSION_MISMATCH=1` 仅用于应急排障，不作为长期方案
 
 ## 1. 产品页面清单 (Page Inventory)
 

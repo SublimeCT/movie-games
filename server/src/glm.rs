@@ -3,9 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use url::Url;
 
-// Import serde_json for error parsing
-use serde_json;
-
 const API_URL: &str = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 const DEFAULT_MODEL: &str = "glm-4.6v-flash";
 
@@ -199,7 +196,10 @@ pub async fn call_glm_with_api_key(
         println!("GLM Error Body: {}", text);
 
         if is_rate_limit_error(&text) {
-             return Err(format!("GLM API 返回错误码 {}: {}", GLM_RATE_LIMIT_CODE, text));
+            return Err(format!(
+                "GLM API 返回错误码 {}: {}",
+                GLM_RATE_LIMIT_CODE, text
+            ));
         }
 
         if contains_limit(&text) {
@@ -219,12 +219,15 @@ pub async fn call_glm_with_api_key(
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text_response) {
         if json_value.get("error").is_some() {
             println!("GLM returned 200 OK but with error body: {}", text_response);
-            
+
             // Check for rate limit in this body
             if is_rate_limit_error(&text_response) {
-                 return Err(format!("GLM API 返回错误码 {}: {}", GLM_RATE_LIMIT_CODE, text_response));
+                return Err(format!(
+                    "GLM API 返回错误码 {}: {}",
+                    GLM_RATE_LIMIT_CODE, text_response
+                ));
             }
-            
+
             return Err(text_response);
         }
     }

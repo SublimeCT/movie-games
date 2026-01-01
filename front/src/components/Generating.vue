@@ -1,18 +1,15 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue';
-import { useRouter, useRoute } from 'vue-router';
-import { ApiError, generateGame, type GenerateRequest } from '../api';
-import type { MovieTemplate } from '../types/movie';
+import { useRouter } from 'vue-router';
+import { ApiError, type GenerateRequest, generateGame } from '../api';
+import { useGameState } from '../hooks/useGameState';
 import CinematicLoader from './ui/CinematicLoader.vue';
 import { FluidCursor } from './ui/fluid-cursor';
-import { WavyBackground } from './ui/wavy-background';
 
 const router = useRouter();
-const route = useRoute();
 
-const emit = defineEmits<{
-  (e: 'start', data: MovieTemplate): void;
-}>();
+// 使用 hook 获取游戏开始方法
+const { handleGameStart } = useGameState();
 
 const isLoading = ref(true);
 const error = ref('');
@@ -36,18 +33,21 @@ const handleGoBack = () => {
   if (countdownInterval) clearInterval(countdownInterval);
   // Store error info for Home.vue to display
   if (error.value) {
-    sessionStorage.setItem('mg_last_error', JSON.stringify({
-      message: error.value,
-      code: errorCode.value,
-      timestamp: Date.now(),
-    }));
+    sessionStorage.setItem(
+      'mg_last_error',
+      JSON.stringify({
+        message: error.value,
+        code: errorCode.value,
+        timestamp: Date.now(),
+      }),
+    );
   }
   router.push('/');
 };
 
 onMounted(async () => {
-  // Parse parameters from URL query
-  const paramsStr = route.query.params as string;
+  // Read parameters from localStorage
+  const paramsStr = localStorage.getItem('mg_generate_params');
   if (!paramsStr) {
     error.value = '缺少生成参数';
     errorCode.value = 'MISSING_PARAMS';
@@ -57,26 +57,28 @@ onMounted(async () => {
   }
 
   try {
-    const params = new URLSearchParams(paramsStr);
+    const params = JSON.parse(paramsStr);
     const request: GenerateRequest = {
-      mode: params.get('mode') as 'wizard' | 'free',
-      theme: params.get('theme') || '',
-      synopsis: params.get('synopsis') || '',
-      genre: params.get('genre') ? JSON.parse(params.get('genre')!) : undefined,
-      characters: params.get('characters') ? JSON.parse(params.get('characters')!) : undefined,
-      freeInput: params.get('freeInput') || '',
-      language: params.get('language') || undefined,
-      size: params.get('size') as '1024x1024' | '864x1152' | '1152x864',
-      apiKey: params.get('apiKey') || undefined,
-      baseUrl: params.get('baseUrl') || undefined,
-      model: params.get('model') || undefined,
+      mode: 'wizard',
+      theme: params.theme,
+      synopsis: params.synopsis,
+      genre: params.genre,
+      characters: params.characters,
+      language: params.language,
+      size: params.size,
+      apiKey: params.apiKey,
+      baseUrl: params.baseUrl,
+      model: params.model,
     };
+
+    // Clear the stored params after reading
+    localStorage.removeItem('mg_generate_params');
 
     // Generate the game
     const data = await generateGame(request);
 
-    // Emit start event to update global state in App.vue
-    emit('start', data);
+    // 调用 handleGameStart 更新全局状态
+    handleGameStart(data);
   } catch (e) {
     if (e instanceof ApiError) {
       // Show detailed error information
@@ -110,16 +112,8 @@ onUnmounted(() => {
 
 <template>
   <div class="generating-page">
-    <FluidCursor class="z-[9999]" />
-    <WavyBackground
-      container-class="fixed inset-0 z-0 pointer-events-none"
-      :colors="['#38bdf8', '#818cf8', '#c084fc', '#e879f9', '#22d3ee']"
-      :wave-width="100"
-      :blur="20"
-      :wave-opacity="0.9"
-      speed="fast"
-    />
     <CinematicLoader v-if="isLoading" />
+    <FluidCursor v-if="isLoading" class="z-[55]" />
 
     <!-- Error State -->
     <div v-if="error" class="error-overlay">
@@ -151,7 +145,6 @@ onUnmounted(() => {
   position: relative;
   height: 100vh;
   width: 100%;
-  overflow: hidden;
 }
 
 .error-overlay {

@@ -49,10 +49,10 @@ onUnmounted(() => {
   <div class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm">
     <Vortex
         background-color="transparent"
-        :particle-count="800"
+        :particle-count="3000"
         :base-hue="260"
-        :base-speed="0.5"
-        :range-speed="1.5"
+        :base-speed="1.5"
+        :range-speed="0"
         :base-radius="2"
         :range-radius="0"
         class="flex flex-col items-center justify-center h-full w-full"

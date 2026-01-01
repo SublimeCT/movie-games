@@ -277,7 +277,7 @@ Hard constraints (must follow):\n\
 
     let url = json_resp
         .data
-        .get(0)
+        .first()
         .map(|d| d.url.trim().to_string())
         .filter(|u| !u.is_empty())
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -396,7 +396,7 @@ Hard constraints (must follow):\n\
 
     let url = json_resp
         .data
-        .get(0)
+        .first()
         .map(|d| d.url.trim().to_string())
         .filter(|u| !u.is_empty())
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -436,7 +436,7 @@ pub(crate) async fn maybe_attach_generated_avatars(
 ) {
     let protagonists = select_protagonists(req_chars);
     if protagonists.len() == 1 {
-        if let Some(spec) = protagonists.get(0) {
+        if let Some(spec) = protagonists.first() {
             if let Ok(img) =
                 generate_protagonist_avatar_base64(client, template, spec, language_tag, api_key)
                     .await

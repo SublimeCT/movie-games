@@ -1,9 +1,5 @@
 <script setup lang="ts">
-import {
-  type InjectionKey,
-  inject,
-  type Ref,
-} from 'vue';
+import { type InjectionKey, inject, type Ref } from 'vue';
 
 // --- Types & Context ---
 type MouseEnterContext = Ref<boolean>;

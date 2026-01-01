@@ -69,15 +69,15 @@ const imageSrc = computed(() => {
 </script>
 
 <template>
-  <div :class="['relative w-24 h-24 transition-transform hover:scale-105 duration-300', className]">
+  <div :class="['relative w-24 h-24 rounded-full overflow-hidden transition-transform hover:scale-105 duration-300', className]">
     <img
       v-if="imageSrc"
       :src="imageSrc"
       :alt="name || 'avatar'"
-      class="w-full h-full object-cover rounded-full drop-shadow-lg"
+      class="w-full h-full object-cover drop-shadow-lg"
       draggable="false"
     />
-    <svg v-else viewBox="0 0 100 100" class="w-full h-full drop-shadow-lg filter">
+    <svg v-else viewBox="0 0 100 100" class="w-full h-full drop-shadow-lg filter p-1">
       <!-- Defs for gradients/filters -->
       <defs>
         <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">

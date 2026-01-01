@@ -24,12 +24,11 @@ export class ApiError extends Error {
 }
 
 export interface GenerateRequest {
-  mode: 'wizard' | 'free';
+  mode: 'wizard';
   theme?: string;
   synopsis?: string; // Renamed from worldview
   genre?: string[]; // Added
   characters?: CharacterInput[];
-  freeInput?: string;
   language?: string;
   size?: '1024x1024' | '864x1152' | '1152x864';
   apiKey?: string;
@@ -85,7 +84,6 @@ export interface CharacterInput {
   isMain: boolean;
 }
 
-
 interface GenerateResponseData {
   id: string;
   template: MovieTemplate;
@@ -102,25 +100,46 @@ export async function generateGame(
     body: JSON.stringify(req),
   });
 
-  const data = await parseApiResponse<any>(response);
-  
-  // New backend format
-  if (data && data.template) {
-    data.template.requestId = data.id;
-    return data.template as MovieTemplate;
-  }
+  const data = await parseApiResponse<GenerateResponseData | MovieTemplate>(
+    response,
+  );
 
-  // Fallback: Old backend format (raw template)
-  if (data && data.projectId) {
-    console.warn('Backend returned raw template, requestId might be missing');
-    return data as MovieTemplate;
+  if (data && typeof data === 'object') {
+    if ('template' in data && 'id' in data) {
+      const maybeId = (data as GenerateResponseData).id;
+      const maybeTemplate = (data as GenerateResponseData).template;
+      if (typeof maybeId === 'string' && maybeTemplate) {
+        const template = maybeTemplate as MovieTemplate;
+        template.requestId = maybeId;
+        return template;
+      }
+    }
+
+    if ('projectId' in data) {
+      const template = data as MovieTemplate;
+      console.warn('Backend returned raw template, requestId might be missing');
+      return template;
+    }
   }
 
   console.error('Invalid response data:', data);
   throw new Error('Invalid response format');
 }
 
-export async function shareGame(id: string, shared: boolean): Promise<void> {
+/**
+ * 更新剧情的分享状态，并在分享成功时返回 shared_records 的 ID。
+ */
+export interface ShareGameResponse {
+  sharedRecordId: string | null;
+}
+
+/**
+ * 更新指定请求的分享状态。
+ */
+export async function shareGame(
+  id: string,
+  shared: boolean,
+): Promise<ShareGameResponse> {
   const response = await fetch(`${API_BASE}/share`, {
     method: 'POST',
     headers: {
@@ -128,7 +147,47 @@ export async function shareGame(id: string, shared: boolean): Promise<void> {
     },
     body: JSON.stringify({ id, shared }),
   });
-  await parseApiResponse<void>(response);
+  return parseApiResponse<ShareGameResponse>(response);
+}
+
+/**
+ * 更新指定 requestId 对应的剧情模板（写回数据库）。
+ * @param id 生成记录 ID（requestId）
+ * @param template 完整剧情模板
+ */
+export async function updateGameTemplate(
+  id: string,
+  template: MovieTemplate,
+): Promise<MovieTemplate> {
+  const response = await fetch(`${API_BASE}/template/update`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ id, template }),
+  });
+
+  const data = await parseApiResponse<MovieTemplate>(response);
+  if (data && !data.requestId) data.requestId = id;
+  return data;
+}
+
+export interface DeleteTemplateResponse {
+  deleted: boolean;
+}
+
+export async function deleteGameTemplate(
+  id: string,
+): Promise<DeleteTemplateResponse> {
+  const response = await fetch(`${API_BASE}/template/delete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ id }),
+  });
+
+  return parseApiResponse<DeleteTemplateResponse>(response);
 }
 
 export async function getSharedGame(id: string): Promise<MovieTemplate> {
@@ -139,6 +198,56 @@ export async function getSharedGame(id: string): Promise<MovieTemplate> {
     data.requestId = id;
   }
   return data;
+}
+
+/**
+ * 历史记录列表项（仅包含列表展示所需的轻量字段）。
+ */
+export interface RecordsListItem {
+  id: string;
+  requestId: string;
+  title: string;
+  sharedAt: string;
+  shared: boolean;
+  synopsis: string;
+  genre: string;
+  language: string;
+  playCount: number;
+}
+
+/**
+ * 根据 shared_records 的 ID 列表获取历史记录列表。
+ */
+export async function listRecords(ids: string[]): Promise<RecordsListItem[]> {
+  const response = await fetch(`${API_BASE}/records`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ids }),
+  });
+  return parseApiResponse<RecordsListItem[]>(response);
+}
+
+/**
+ * 获取某个 requestId 的分享元信息，用于判断是否为创建人及分享状态。
+ */
+export interface SharedRecordMeta {
+  sharedRecordId: string | null;
+  requestId: string;
+  shared: boolean;
+  sharedAt: string | null;
+  isOwner: boolean;
+}
+
+/**
+ * 查询指定 requestId 对应的分享元信息。
+ */
+export async function getSharedRecordMeta(
+  id: string,
+): Promise<SharedRecordMeta> {
+  const response = await fetch(`${API_BASE}/records/meta/${id}`);
+  return parseApiResponse<SharedRecordMeta>(response);
 }
 
 export async function generatePrompt(req: GenerateRequest): Promise<string> {

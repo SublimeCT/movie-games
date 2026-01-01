@@ -5,8 +5,8 @@ mod tests {
     use std::time::Duration;
 
     use crate::types::MovieTemplate;
-    use crate::types::{Choice, MetaInfo, Provenance, StoryNode};
-    use serde_json::from_str;
+    use crate::types::{AffinityEffect, Choice, MetaInfo, Provenance, StoryNode};
+    use serde_json::{from_str, to_string};
 
     use crate::api_types::GenerateRequest;
 
@@ -65,6 +65,32 @@ mod tests {
 
             let result: Result<GenerateRequest, _> = from_str(json_data);
             assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn test_choice_serialization_omits_null_affinity_effect() {
+        run_with_timeout(TEST_TIMEOUT, || {
+            let choice = Choice {
+                text: "go".to_string(),
+                next_node_id: "1".to_string(),
+                affinity_effect: None,
+            };
+
+            let json = to_string(&choice).unwrap();
+            assert!(!json.contains("affinityEffect"));
+
+            let choice2 = Choice {
+                text: "go".to_string(),
+                next_node_id: "1".to_string(),
+                affinity_effect: Some(AffinityEffect {
+                    character_id: "Alice".to_string(),
+                    delta: 10,
+                }),
+            };
+
+            let json2 = to_string(&choice2).unwrap();
+            assert!(json2.contains("affinityEffect"));
         });
     }
 
@@ -209,6 +235,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "go".to_string(),
                         next_node_id: "node_1".to_string(),
+                        affinity_effect: None,
                     }],
                 },
             );
@@ -261,15 +288,16 @@ mod tests {
 
             crate::template::normalize_template_nodes(&mut template);
 
-            assert!(template.nodes.contains_key("n_start"));
-            assert!(template.nodes.contains_key("n_1"));
-            assert!(template.nodes.contains_key("n_keep"));
+            assert!(template.nodes.contains_key("start"));
+            assert!(template.nodes.contains_key("1"));
+            assert!(template.nodes.contains_key("keep"));
             assert!(!template.nodes.contains_key("node_start"));
             assert!(!template.nodes.contains_key("node_1"));
+            assert!(!template.nodes.contains_key("n_keep"));
 
-            let start = template.nodes.get("n_start").unwrap();
-            assert_eq!(start.id, "n_start");
-            assert_eq!(start.choices[0].next_node_id, "n_1");
+            let start = template.nodes.get("start").unwrap();
+            assert_eq!(start.id, "start");
+            assert_eq!(start.choices[0].next_node_id, "1");
         });
     }
 
@@ -300,7 +328,7 @@ mod tests {
 
             crate::template::ensure_minimum_game_graph(&mut template, "zh-CN", None);
 
-            assert!(template.nodes.contains_key("n_start"));
+            assert!(template.nodes.contains_key("start"));
             assert!(!template.nodes.is_empty());
             assert!(template.endings.len() >= 3);
             assert_eq!(template.meta.language, "zh-CN");
@@ -341,7 +369,7 @@ mod tests {
 
             crate::template::ensure_minimum_game_graph(&mut template, "zh-CN", Some(req_chars));
 
-            let start = template.nodes.get("n_start").unwrap();
+            let start = template.nodes.get("start").unwrap();
             let chars = start.characters.as_ref().unwrap();
             assert!(chars.iter().any(|c| c == "李雷"));
             assert!(template.characters.values().any(|c| c.name == "李雷"));
@@ -388,6 +416,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "go".to_string(),
                         next_node_id: "bad_end".to_string(),
+                        affinity_effect: None,
                     }],
                 },
             );
@@ -442,7 +471,7 @@ mod tests {
                     content: "...".to_string(),
                     ending_key: None,
                     level: None,
-                    characters: Some(vec!["玩家".to_string()]),
+                    characters: Some(vec!["玩家".to_string(), "张三".to_string()]),
                     choices: vec![],
                 },
             );
@@ -611,6 +640,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "to 02".to_string(),
                         next_node_id: "n_02".to_string(),
+                        affinity_effect: None,
                     }],
                 },
             );
@@ -627,10 +657,12 @@ mod tests {
                         Choice {
                             text: "back".to_string(),
                             next_node_id: "n_start".to_string(),
+                            affinity_effect: None,
                         },
                         Choice {
                             text: "self".to_string(),
                             next_node_id: "n_02".to_string(),
+                            affinity_effect: None,
                         },
                     ],
                 },
@@ -694,6 +726,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "go".to_string(),
                         next_node_id: "n_missing".to_string(),
+                        affinity_effect: None,
                     }],
                 },
             );
@@ -751,6 +784,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "go".to_string(),
                         next_node_id: "n_03".to_string(),
+                        affinity_effect: None,
                     }],
                 },
             );
@@ -766,6 +800,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "end".to_string(),
                         next_node_id: "ending_good".to_string(),
+                        affinity_effect: None,
                     }],
                 },
             );
@@ -781,6 +816,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "end".to_string(),
                         next_node_id: "ending_good".to_string(),
+                        affinity_effect: None,
                     }],
                 },
             );

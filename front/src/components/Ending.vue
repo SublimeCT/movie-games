@@ -1,47 +1,253 @@
 <script setup lang="ts">
+import { useStorage } from '@vueuse/core';
+import {
+  Copy,
+  Download,
+  FileJson,
+  Globe,
+  Link as LinkIcon,
+  Lock,
+  Pencil,
+  Share2,
+  X,
+} from 'lucide-vue-next';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { X, Download, FileJson, Share2, Globe, Link as LinkIcon, Lock } from 'lucide-vue-next';
-import type { Ending, MovieTemplate, StoryNode } from '../types/movie';
-import { shareGame } from '../api';
+import { useRouter } from 'vue-router';
+import { getSharedRecordMeta, shareGame } from '../api';
+import { useGameState } from '../hooks/useGameState';
+import type { Character, Ending, StoryNode } from '../types/movie';
 
-const props = defineProps<{
-  data?: MovieTemplate | null;
-  ending?: Ending | null;
-}>();
+// 使用 hook 获取游戏数据、结局数据和方法
+const router = useRouter();
 
-const emit = defineEmits<{
-  (e: 'restartPlay'): void;
-  (e: 'remake'): void;
-}>();
+const {
+  gameData: data,
+  endingData: ending,
+  handleRestartPlay,
+  handleRemake,
+} = useGameState();
+
+const affinityState = useStorage<Record<string, number>>(
+  'mg_affinity_state',
+  {},
+  localStorage,
+);
+
+const selectDefaultCharacter = (characters: Record<string, Character>) => {
+  const entries = Object.entries(characters);
+  if (entries.length === 0) return null;
+
+  const scored = entries
+    .map(([key, c]) => {
+      const name = (c.name || '').toLowerCase();
+      const role = (c.role || '').toLowerCase();
+      let score = 0;
+
+      if (/player|protagonist|main/.test(key.toLowerCase())) score += 5;
+      if (name.includes('主角') || name === '我') score += 6;
+      if (role.includes('主角') || role.includes('protagonist')) score += 3;
+      if (c.age && c.age > 0) score += 1;
+
+      return { score, c };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  return scored[0]?.c ?? null;
+};
+
+const protagonistName = computed(() => {
+  const template = data.value;
+  const selected = template?.characters
+    ? selectDefaultCharacter(template.characters)
+    : null;
+  return String(selected?.name || '').trim();
+});
+
+const getAffinityBarStyle = (value: number) => {
+  const v = Math.max(0, Math.min(100, Math.round(value)));
+  const hue = 10 + (v / 100) * 120;
+  return {
+    width: `${v}%`,
+    backgroundImage: `linear-gradient(90deg, hsla(${hue}, 95%, 58%, 0.9), hsla(${
+      hue + 18
+    }, 95%, 60%, 0.65))`,
+  } as const;
+};
+
+const affinityRows = computed(() => {
+  const characters = data.value?.characters ?? {};
+  const protagonist = protagonistName.value;
+
+  const rows = Object.values(characters)
+    .map((c) => {
+      const name = String(c.name || '').trim();
+      if (!name) return null;
+      if (protagonist && name === protagonist) return null;
+
+      const raw = affinityState.value[name];
+      const value = Number.isFinite(raw) ? Number(raw) : 50;
+      const v = Math.max(0, Math.min(100, Math.round(value)));
+
+      return {
+        key: String(c.id || name),
+        name,
+        value: v,
+        barStyle: getAffinityBarStyle(v),
+      };
+    })
+    .filter(Boolean) as {
+    key: string;
+    name: string;
+    value: number;
+    barStyle: { width: string; backgroundImage: string };
+  }[];
+
+  rows.sort((a, b) => a.name.localeCompare(b.name));
+  return rows;
+});
 
 const isShared = ref(false);
 const shareLoading = ref(false);
 const showShareModal = ref(false);
+const showAnalysisModal = ref(false);
 
-const shareLink = computed(() => {
-  if (!props.data?.requestId) return '';
-  return `${window.location.origin}/play/${props.data.requestId}`;
+const toast = ref<{ text: string; kind: 'info' | 'success' | 'error' } | null>(
+  null,
+);
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * 统一展示提示信息。
+ */
+const showToast = (text: string, kind: 'info' | 'success' | 'error') => {
+  toast.value = { text, kind };
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toast.value = null;
+  }, 2200);
+};
+
+const isOwner = ref(true);
+const sharedRecordId = ref<string | null>(null);
+const sharedAt = ref<string | null>(null);
+
+/** GLM 的默认请求地址（用于判定“是否被修改”） */
+const DEFAULT_GLM_BASE_URL =
+  'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+/** GLM 的默认模型（用于判定“是否被修改”） */
+const DEFAULT_GLM_MODEL = 'glm-4.6v-flash';
+
+const glmBaseUrl = useStorage('mg_glm_base_url', DEFAULT_GLM_BASE_URL);
+const glmModel = useStorage('mg_glm_model', DEFAULT_GLM_MODEL);
+
+/**
+ * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。
+ */
+const securityLocked = computed(() => {
+  const baseUrlTouched = glmBaseUrl.value.trim() !== DEFAULT_GLM_BASE_URL;
+  const modelTouched = glmModel.value.trim() !== DEFAULT_GLM_MODEL;
+  return baseUrlTouched || modelTouched;
 });
 
-const handleShare = async () => {
-  if (!props.data?.requestId) {
-    alert('此数据为本地导入或旧版数据，不支持在线分享');
+const recordIds = useStorage<string[]>('mg_record_ids', []);
+const playEntry = ref<'owner' | 'shared' | 'import'>('owner');
+
+const readPlayEntry = () => {
+  const raw = String(sessionStorage.getItem('mg_play_entry') || '').trim();
+  if (raw === 'shared') return 'shared' as const;
+  if (raw === 'import') return 'import' as const;
+  return 'owner' as const;
+};
+
+const shareLink = computed(() => {
+  if (playEntry.value !== 'owner') return '';
+  if (!data.value?.requestId) return '';
+  return `${window.location.origin}/play/${data.value.requestId}`;
+});
+
+/**
+ * 读取分享元信息，避免非创建人在结局页看到分享入口。
+ */
+const refreshShareMeta = async () => {
+  if (playEntry.value === 'import') {
+    isOwner.value = false;
+    isShared.value = false;
+    sharedRecordId.value = null;
+    sharedAt.value = null;
     return;
   }
-  
+
+  const requestId = data.value?.requestId;
+  if (!requestId) return;
+
+  try {
+    const meta = await getSharedRecordMeta(requestId);
+    isOwner.value = meta.isOwner;
+    isShared.value = meta.shared;
+    sharedRecordId.value = meta.sharedRecordId;
+    sharedAt.value = meta.sharedAt;
+  } catch (e) {
+    console.error(e);
+    if (playEntry.value === 'shared') {
+      isOwner.value = false;
+      return;
+    }
+
+    isOwner.value = true;
+    isShared.value = false;
+    sharedRecordId.value = null;
+    sharedAt.value = null;
+  }
+};
+
+watch(
+  () => data.value?.requestId,
+  () => {
+    refreshShareMeta();
+  },
+);
+
+const handleShare = async () => {
+  if (playEntry.value === 'import') {
+    showToast('手动导入的剧情不支持在线分享', 'error');
+    return;
+  }
+
+  if (securityLocked.value) {
+    showToast(
+      '检测到本地模型配置已被修改（数据安全），已禁用分享功能',
+      'error',
+    );
+    return;
+  }
+
+  if (!data.value?.requestId) {
+    showToast('此数据不支持在线分享', 'error');
+    return;
+  }
+
   shareLoading.value = true;
   try {
     const nextState = !isShared.value;
-    await shareGame(props.data.requestId, nextState);
+    const resp = await shareGame(data.value.requestId, nextState);
     isShared.value = nextState;
+    await refreshShareMeta();
+
     if (nextState) {
+      if (resp.sharedRecordId) {
+        sharedRecordId.value = resp.sharedRecordId;
+        if (!recordIds.value.includes(resp.sharedRecordId)) {
+          recordIds.value = [...recordIds.value, resp.sharedRecordId];
+        }
+      }
       showShareModal.value = true;
+    } else {
+      showToast('已取消分享', 'success');
     }
-  } catch (e) {
+  } catch (e: unknown) {
     console.error('Share failed:', e);
-    // @ts-ignore
-    const msg = e.message || '分享状态更新失败';
-    alert(msg);
+    const msg = e instanceof Error ? e.message : '分享状态更新失败';
+    showToast(msg, 'error');
   } finally {
     shareLoading.value = false;
   }
@@ -50,15 +256,45 @@ const handleShare = async () => {
 const copyShareLink = async () => {
   try {
     await navigator.clipboard.writeText(shareLink.value);
-    alert('链接已复制到剪贴板');
+    showToast('链接已复制到剪贴板', 'success');
   } catch (e) {
     console.error('Copy failed:', e);
+    showToast('复制失败，请重试', 'error');
   }
+};
+
+const cancelShareFromAnalysis = () => {
+  showAnalysisModal.value = false;
+  void handleShare();
+};
+
+const goDesign = () => {
+  if (playEntry.value === 'import') {
+    sessionStorage.setItem('mg_play_entry', 'import');
+    router.push('/design');
+    return;
+  }
+
+  if (securityLocked.value) {
+    showToast(
+      '检测到本地模型配置已被修改（数据安全），已禁用设计功能',
+      'error',
+    );
+    return;
+  }
+
+  sessionStorage.setItem('mg_play_entry', 'owner');
+  const requestId = data.value?.requestId;
+  if (requestId) {
+    router.push(`/design?id=${requestId}`);
+    return;
+  }
+  router.push('/design');
 };
 
 const resolvedEnding = computed<Ending>(
   () =>
-    props.ending ?? {
+    ending.value ?? {
       type: 'neutral',
       description: 'Game Over',
     },
@@ -71,12 +307,12 @@ const endingTitle = computed(() => {
 });
 
 const stats = computed(() => {
-  const nodes = props.data?.nodes ?? {};
-  const endings = props.data?.endings ?? {};
+  const nodes = data.value?.nodes ?? {};
+  const endings = data.value?.endings ?? {};
   return {
     nodes: Object.keys(nodes).length,
     endings: Object.keys(endings).length,
-    characters: Object.keys(props.data?.characters ?? {}).length,
+    characters: Object.keys(data.value?.characters ?? {}).length,
   };
 });
 
@@ -85,6 +321,42 @@ const endingDetails = computed(() => {
   return {
     nodeId: (ending.nodeId || '').trim() || undefined,
     reachedAt: (ending.reachedAt || '').trim() || undefined,
+  };
+});
+
+/**
+ * 结局页的剧情分析信息（用于展示，不参与任何存储）。
+ */
+const analysis = computed(() => {
+  const template = data.value;
+  const meta = template?.meta;
+  const genre = String(meta?.genre || '').trim();
+  const tags = genre
+    ? genre
+        .split(/[/|,]/g)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 6)
+    : [];
+
+  const language = String(meta?.language || '').trim();
+  if (language && !tags.includes(language)) tags.push(language);
+
+  const shareTime = sharedAt.value ? new Date(sharedAt.value) : null;
+
+  return {
+    title: template?.title || 'Untitled',
+    logline: meta?.logline || '',
+    synopsis: meta?.synopsis || '',
+    genre,
+    tags,
+    language,
+    runtime: meta?.targetRuntimeMinutes,
+    shareStatus: isShared.value ? 'Public' : 'Private',
+    sharedAtLabel:
+      shareTime && !Number.isNaN(shareTime.getTime())
+        ? shareTime.toLocaleString()
+        : sharedAt.value || '-',
   };
 });
 
@@ -170,11 +442,15 @@ const setupBackground = () => {
 
 let stopBg: undefined | (() => void);
 onMounted(() => {
+  playEntry.value = readPlayEntry();
+  refreshShareMeta();
+
   stopBg = setupBackground();
   window.addEventListener('pointerup', onGlobalPointerUp);
   window.addEventListener('pointercancel', onGlobalPointerUp);
 });
 onUnmounted(() => {
+  if (toastTimer) clearTimeout(toastTimer);
   stopBg?.();
   window.removeEventListener('pointerup', onGlobalPointerUp);
   window.removeEventListener('pointercancel', onGlobalPointerUp);
@@ -199,11 +475,24 @@ type EdgeVM = {
   label?: string;
 };
 
+/**
+ * 当 start 节点存在但没有任何选项时，将节点 1 视为起始节点。
+ */
+const fallbackStartToOne = computed(() => {
+  const nodes = data.value?.nodes;
+  if (!nodes?.start) return false;
+  if (!nodes['1']) return false;
+  const choices = (nodes.start as StoryNode).choices;
+  return !Array.isArray(choices) || choices.length === 0;
+});
+
 const startNodeId = computed(() => {
-  const nodes = props.data?.nodes;
+  const nodes = data.value?.nodes;
   if (!nodes) return '';
   const keys = Object.keys(nodes);
   if (keys.length === 0) return '';
+
+  if (fallbackStartToOne.value) return '1';
   if (keys.includes('start')) return 'start';
   if (keys.includes('root')) return 'root';
   if (keys.includes('1')) return '1';
@@ -211,8 +500,8 @@ const startNodeId = computed(() => {
 });
 
 const treeGraph = computed(() => {
-  const nodes: Record<string, StoryNode> = props.data?.nodes ?? {};
-  const endings = props.data?.endings ?? {};
+  const nodes: Record<string, StoryNode> = data.value?.nodes ?? {};
+  const endings = data.value?.endings ?? {};
   const root = startNodeId.value;
   if (!root || !nodes[root]) {
     return {
@@ -227,7 +516,7 @@ const treeGraph = computed(() => {
 
   for (const [id, n] of Object.entries(nodes)) {
     const list: { to: string; label?: string }[] = [];
-    
+
     const seenTargets = new Set<string>();
     for (const c of n.choices || []) {
       const to = (c.nextNodeId || '').trim();
@@ -265,6 +554,11 @@ const treeGraph = computed(() => {
     }
   }
 
+  if (fallbackStartToOne.value && nodes.start) {
+    visited.add('start');
+    depth.set('start', 0);
+  }
+
   const byDepth = new Map<number, string[]>();
   for (const id of visited) {
     const d = depth.get(id) ?? 0;
@@ -277,34 +571,36 @@ const treeGraph = computed(() => {
   // 优化排序：确保子节点尽量靠近父节点
   const layers: string[][] = [];
   for (let i = 0; i <= maxDepth; i++) layers.push([]);
-  
+
   const placed = new Set<string>();
-  
+
   // Layer 0
   const rootLayer = byDepth.get(0) || [];
-  rootLayer.sort(); 
+  rootLayer.sort();
   layers[0] = rootLayer;
-  rootLayer.forEach(id => placed.add(id));
+  rootLayer.forEach((id) => {
+    placed.add(id);
+  });
 
   // Layer 1...N
   for (let d = 0; d < maxDepth; d++) {
     const currentLayer = layers[d] ?? [];
     const nextLayerCandidates: string[] = [];
-    
+
     // 按父节点顺序添加子节点
     for (const pid of currentLayer) {
-       const kids = children.get(pid) || [];
-       // 按 label 排序，保证同一父节点的子节点有序
-       kids.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
-       
-       for (const k of kids) {
-         if (depth.get(k.to) === d + 1 && !placed.has(k.to)) {
-           nextLayerCandidates.push(k.to);
-           placed.add(k.to);
-         }
-       }
+      const kids = children.get(pid) || [];
+      // 按 label 排序，保证同一父节点的子节点有序
+      kids.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+
+      for (const k of kids) {
+        if (depth.get(k.to) === d + 1 && !placed.has(k.to)) {
+          nextLayerCandidates.push(k.to);
+          placed.add(k.to);
+        }
+      }
     }
-    
+
     // 添加遗漏的节点（孤立节点或父节点在更上层的）
     const originalNextLayer = byDepth.get(d + 1) || [];
     originalNextLayer.sort();
@@ -314,12 +610,12 @@ const treeGraph = computed(() => {
         placed.add(id);
       }
     }
-    
-    layers[d+1] = nextLayerCandidates;
+
+    layers[d + 1] = nextLayerCandidates;
   }
 
-  const xStep = 260; 
-  const yStep = 130; 
+  const xStep = 260;
+  const yStep = 130;
   const padX = 50;
   const padY = 50;
   const cardW = 200;
@@ -328,21 +624,21 @@ const treeGraph = computed(() => {
   // 计算最大行数
   let maxRow = 0;
   for (const layer of layers) {
-      if (!layer) continue;
-      maxRow = Math.max(maxRow, layer.length);
+    if (!layer) continue;
+    maxRow = Math.max(maxRow, layer.length);
   }
-  
+
   const totalH = Math.max(1, maxRow) * yStep;
   const totalW = padX * 2 + (maxDepth + 1) * xStep;
 
   const pos = new Map<string, { x: number; y: number }>();
-  
+
   for (let d = 0; d <= maxDepth; d++) {
     const layer = layers[d] ?? [];
     const layerH = layer.length * yStep;
     // 垂直居中每一层
     const startY = padY + (totalH - layerH) / 2;
-    
+
     for (let i = 0; i < layer.length; i++) {
       const id = layer[i];
       if (!id) continue;
@@ -369,7 +665,12 @@ const treeGraph = computed(() => {
     });
   }
 
-  return { nodes: nodeVMs, edges, view: { w: totalW, h: totalH + padY * 2 }, parent };
+  return {
+    nodes: nodeVMs,
+    edges,
+    view: { w: totalW, h: totalH + padY * 2 },
+    parent,
+  };
 });
 
 const selectedId = ref<string>('');
@@ -427,9 +728,9 @@ const fitTree = async () => {
   if (!el) return;
   const rect = el.getBoundingClientRect();
   const view = treeGraph.value.view;
-  
+
   // Subtract padding from container dimensions to avoid edge hugging
-  const availableW = rect.width - 40; 
+  const availableW = rect.width - 40;
   const availableH = rect.height - 40;
 
   let scale = Math.min(availableW / view.w, availableH / view.h);
@@ -455,7 +756,7 @@ const fitTree = async () => {
 };
 
 watch(
-  () => props.data,
+  () => data.value,
   () => {
     selectedId.value = '';
     fitTree();
@@ -498,7 +799,7 @@ const onPointerDown = (e: PointerEvent) => {
   // Actually, for smooth dragging, we usually want capture.
   // Let's capture, but handle click vs drag manually.
   // (e.currentTarget as HTMLElement | null)?.setPointerCapture?.(e.pointerId);
-  
+
   dragging.value = {
     x: e.clientX,
     y: e.clientY,
@@ -509,15 +810,19 @@ const onPointerDown = (e: PointerEvent) => {
 
 const onPointerMove = (e: PointerEvent) => {
   if (!dragging.value) return;
-  
+
   const dx = e.clientX - dragging.value.x;
   const dy = e.clientY - dragging.value.y;
-  
+
   // If moved significantly, mark as dragging
-  if (!isDragging.value && (Math.abs(e.clientX - dragStart.value.x) > 5 || Math.abs(e.clientY - dragStart.value.y) > 5)) {
+  if (
+    !isDragging.value &&
+    (Math.abs(e.clientX - dragStart.value.x) > 5 ||
+      Math.abs(e.clientY - dragStart.value.y) > 5)
+  ) {
     isDragging.value = true;
   }
-  
+
   pan.value = { x: dragging.value.panX + dx, y: dragging.value.panY + dy };
 };
 
@@ -543,8 +848,8 @@ const onGlobalPointerUp = () => {
 const selectedNodeInfo = computed(() => {
   const id = selectedId.value;
   if (!id) return null;
-  const nodes = props.data?.nodes ?? {};
-  const endings = props.data?.endings ?? {};
+  const nodes = data.value?.nodes ?? {};
+  const endings = data.value?.endings ?? {};
   if (endings[id]) {
     return {
       id,
@@ -581,10 +886,10 @@ const showJsonModal = ref(false);
  */
 const jsonContent = computed(() => {
   // 导出完整剧情信息，可以直接在主页导入
-  if (!props.data) return '{}';
+  if (!data.value) return '{}';
   // 确保包含所有必要字段，特别是 requestId（如果有）
   // 深拷贝以避免副作用，虽然 JSON.stringify 本身不会修改原对象
-  const dataToExport = { ...props.data };
+  const dataToExport = { ...data.value };
   return JSON.stringify(dataToExport, null, 2);
 });
 
@@ -597,9 +902,22 @@ const downloadJson = () => {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `movie-game-${props.data?.title || 'export'}-${Date.now()}.json`;
+  a.download = `movie-game-${data.value?.title || 'export'}-${Date.now()}.json`;
   a.click();
   URL.revokeObjectURL(url);
+};
+
+/**
+ * Copy the JSON content to clipboard.
+ */
+const copyJson = async () => {
+  try {
+    await navigator.clipboard.writeText(jsonContent.value);
+    showToast('JSON 已复制到剪贴板', 'success');
+  } catch (e) {
+    console.error('Copy failed:', e);
+    showToast('复制失败，请重试', 'error');
+  }
 };
 </script>
 
@@ -626,15 +944,15 @@ const downloadJson = () => {
 
             <div class="flex flex-col md:flex-row items-stretch md:items-center gap-3 md:gap-4 mt-8 w-full md:w-auto">
               <button
-                @click="emit('restartPlay')"
+                @click="handleRestartPlay"
                 class="group relative inline-flex items-center justify-center px-8 py-3 rounded-xl font-bold text-black bg-white hover:bg-neutral-200 transition-all shadow-[0_0_20px_rgba(255,255,255,0.3)] hover:shadow-[0_0_30px_rgba(255,255,255,0.5)] overflow-hidden w-full md:w-auto"
               >
                 <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/50 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700"></div>
                 <span class="relative z-10">再次挑战</span>
               </button>
-              
+
               <button
-                @click="emit('remake')"
+                @click="handleRemake"
                 class="group relative inline-flex items-center justify-center px-6 py-3 rounded-xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-lg transition-all overflow-hidden w-full md:w-auto"
               >
                 <div class="absolute inset-0 bg-white/5 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
@@ -651,10 +969,22 @@ const downloadJson = () => {
                 </span>
               </div>
 
-              <!-- Share Button -->
               <button
+                v-if="playEntry === 'import' || (isOwner && playEntry === 'owner')"
+                @click="goDesign"
+                :disabled="playEntry === 'owner' && securityLocked"
+                class="group relative inline-flex items-center justify-center px-4 py-3 rounded-xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-[0_0_25px_rgba(168,85,247,0.14)] transition-all gap-2 overflow-hidden w-full md:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <div class="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                <Pencil class="w-4 h-4 relative z-10" />
+                <span class="relative z-10">进入设计</span>
+              </button>
+
+              <!-- Share Button (仅创建人可见) -->
+              <button
+                v-if="isOwner && playEntry === 'owner'"
                 @click="handleShare"
-                :disabled="shareLoading"
+                :disabled="shareLoading || securityLocked"
                 class="group relative inline-flex items-center justify-center px-4 py-3 rounded-xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-[0_0_25px_rgba(34,211,238,0.14)] transition-all gap-2 overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed w-full md:w-auto"
               >
                 <div class="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
@@ -694,6 +1024,30 @@ const downloadJson = () => {
                 <div class="rounded-xl border border-white/10 bg-white/5 px-4 py-3">
                   <div class="text-white/50 text-xs tracking-wider uppercase">reachedAt</div>
                   <div class="mt-1 font-mono text-white/90 break-all">{{ endingDetails.reachedAt || '-' }}</div>
+                </div>
+              </div>
+
+              <div class="mt-6">
+                <div class="text-xs tracking-[0.24em] uppercase text-white/50 font-semibold">好感度</div>
+
+                <div v-if="affinityRows.length === 0" class="mt-3 text-sm text-white/50">
+                  暂无可展示的角色好感度
+                </div>
+
+                <div v-else class="mt-3 space-y-2">
+                  <div
+                    v-for="row in affinityRows"
+                    :key="row.key"
+                    class="rounded-xl border border-white/10 bg-white/5 px-4 py-3"
+                  >
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="text-sm font-semibold text-white/90 truncate">{{ row.name }}</div>
+                      <div class="text-xs font-mono text-white/70">{{ row.value }}%</div>
+                    </div>
+                    <div class="mt-2 h-2 rounded-full bg-white/10 overflow-hidden">
+                      <div class="h-full rounded-full" :style="row.barStyle"></div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -861,10 +1215,136 @@ const downloadJson = () => {
           
           <div class="p-6 border-t border-white/10 bg-white/5 flex justify-end gap-3">
             <button @click="showJsonModal = false" class="px-4 py-2 rounded-lg text-sm font-medium text-white/60 hover:text-white transition">关闭</button>
+            <button @click="copyJson" class="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm font-medium transition border border-white/10">
+              <Copy class="w-4 h-4" />
+              复制 JSON
+            </button>
             <button @click="downloadJson" class="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm font-medium transition border border-white/10">
               <Download class="w-4 h-4" />
               下载 JSON
             </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Analysis Modal -->
+    <Teleport to="body">
+      <div v-if="showAnalysisModal" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" @click.self="showAnalysisModal = false">
+        <div class="relative w-full max-w-3xl rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-2xl overflow-hidden flex flex-col">
+          <div class="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/5">
+            <div>
+              <div class="text-xs tracking-[0.28em] uppercase text-white/50 font-semibold">Analysis</div>
+              <div class="mt-1 text-xl md:text-2xl font-black text-white/90">剧情分析</div>
+            </div>
+            <button @click="showAnalysisModal = false" class="text-white/50 hover:text-white transition">
+              <X class="w-5 h-5" />
+            </button>
+          </div>
+
+          <div class="p-6 md:p-8 space-y-6 overflow-y-auto">
+            <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+              <div class="text-xs tracking-[0.24em] uppercase text-white/50 font-semibold">Title</div>
+              <div class="mt-3 text-2xl md:text-3xl font-black text-white/90">{{ analysis.title }}</div>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <span
+                  v-for="tag in analysis.tags"
+                  :key="tag"
+                  class="px-3 py-1 rounded-full border border-white/10 bg-black/35 text-xs text-white/70 hover:bg-white/10 transition"
+                >
+                  {{ tag }}
+                </span>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+                <div class="text-xs tracking-[0.24em] uppercase text-white/50 font-semibold">Logline</div>
+                <div class="mt-3 text-sm md:text-base leading-relaxed text-white/80">
+                  {{ analysis.logline || '（暂无 Logline）' }}
+                </div>
+              </div>
+              <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+                <div class="text-xs tracking-[0.24em] uppercase text-white/50 font-semibold">Synopsis</div>
+                <div class="mt-3 text-sm md:text-base leading-relaxed text-white/80">
+                  {{ analysis.synopsis || '（暂无剧情简介）' }}
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+              <div class="text-xs tracking-[0.24em] uppercase text-white/50 font-semibold">Metrics</div>
+              <div class="mt-4 grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+                <div class="rounded-xl border border-white/10 bg-black/35 px-4 py-3">
+                  <div class="text-white/50 text-xs tracking-wider uppercase">nodes</div>
+                  <div class="mt-1 font-mono text-white/90">{{ stats.nodes }}</div>
+                </div>
+                <div class="rounded-xl border border-white/10 bg-black/35 px-4 py-3">
+                  <div class="text-white/50 text-xs tracking-wider uppercase">endings</div>
+                  <div class="mt-1 font-mono text-white/90">{{ stats.endings }}</div>
+                </div>
+                <div class="rounded-xl border border-white/10 bg-black/35 px-4 py-3">
+                  <div class="text-white/50 text-xs tracking-wider uppercase">characters</div>
+                  <div class="mt-1 font-mono text-white/90">{{ stats.characters }}</div>
+                </div>
+                <div class="rounded-xl border border-white/10 bg-black/35 px-4 py-3">
+                  <div class="text-white/50 text-xs tracking-wider uppercase">runtime</div>
+                  <div class="mt-1 font-mono text-white/90">{{ analysis.runtime ?? '-' }}</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+              <div class="text-xs tracking-[0.24em] uppercase text-white/50 font-semibold">Share</div>
+              <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                <div class="rounded-xl border border-white/10 bg-black/35 px-4 py-3">
+                  <div class="text-white/50 text-xs tracking-wider uppercase">status</div>
+                  <div class="mt-1 font-mono text-white/90">{{ analysis.shareStatus }}</div>
+                </div>
+                <div class="rounded-xl border border-white/10 bg-black/35 px-4 py-3">
+                  <div class="text-white/50 text-xs tracking-wider uppercase">sharedAt</div>
+                  <div class="mt-1 font-mono text-white/90 break-all">{{ analysis.sharedAtLabel }}</div>
+                </div>
+                <div class="rounded-xl border border-white/10 bg-black/35 px-4 py-3 md:col-span-2">
+                  <div class="text-white/50 text-xs tracking-wider uppercase">requestId</div>
+                  <div class="mt-1 font-mono text-white/90 break-all">{{ data?.requestId || '-' }}</div>
+                </div>
+                <div v-if="isOwner && playEntry === 'owner' && sharedRecordId" class="rounded-xl border border-white/10 bg-black/35 px-4 py-3 md:col-span-2">
+                  <div class="text-white/50 text-xs tracking-wider uppercase">sharedRecordId</div>
+                  <div class="mt-1 font-mono text-white/90 break-all">{{ sharedRecordId }}</div>
+                </div>
+              </div>
+
+              <div class="mt-5 flex flex-col md:flex-row gap-3">
+                <button
+                  v-if="shareLink && playEntry === 'owner'"
+                  @click="copyShareLink"
+                  class="group relative inline-flex items-center justify-center px-4 py-3 rounded-xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-[0_0_25px_rgba(34,211,238,0.14)] transition-all gap-2 overflow-hidden w-full md:w-auto"
+                >
+                  <div class="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                  <Copy class="w-4 h-4 relative z-10" />
+                  <span class="relative z-10">复制分享链接</span>
+                </button>
+
+                <button
+                  v-if="isOwner && playEntry === 'owner' && isShared"
+                  @click="cancelShareFromAnalysis"
+                  class="group relative inline-flex items-center justify-center px-4 py-3 rounded-xl font-bold text-white/90 border border-red-500/20 bg-red-500/10 hover:bg-red-500/15 backdrop-blur-md transition-all gap-2 overflow-hidden w-full md:w-auto"
+                >
+                  <div class="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                  <Lock class="w-4 h-4 relative z-10" />
+                  <span class="relative z-10">取消分享</span>
+                </button>
+
+                <button
+                  @click="showAnalysisModal = false"
+                  class="group relative inline-flex items-center justify-center px-4 py-3 rounded-xl font-bold text-black bg-white hover:bg-neutral-200 transition-all overflow-hidden w-full md:w-auto"
+                >
+                  <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/60 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700"></div>
+                  <span class="relative z-10">关闭</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

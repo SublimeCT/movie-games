@@ -109,12 +109,19 @@ export interface StoryNode {
 /**
  * 玩家选项条目
  */
+export interface AffinityEffect {
+  characterId: string;
+  delta: number;
+}
+
 export interface Choice {
   /** 界面展示文本 */
   text: string;
 
   /** 选中后跳转的下一个节点 ID */
   nextNodeId: string;
+
+  affinityEffect?: AffinityEffect;
 }
 
 /**

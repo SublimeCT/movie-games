@@ -4,6 +4,7 @@ import {
   AlertCircle,
   ClipboardCopy,
   HelpCircle,
+  History,
   Import as ImportIcon,
   KeyRound,
   Link2,
@@ -12,7 +13,7 @@ import {
   Wand2,
   X,
 } from 'lucide-vue-next';
-import { ref, watch, onMounted } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   ApiError,
@@ -21,18 +22,18 @@ import {
   expandSynopsis,
   generatePrompt,
 } from '../api';
+import { randomThemes } from '../data/randomThemes';
+import { useGameState } from '../hooks/useGameState';
 import type { MovieTemplate } from '../types/movie';
 import CinematicLoader from './ui/CinematicLoader.vue';
 import { FluidCursor } from './ui/fluid-cursor';
 import { WavyBackground } from './ui/wavy-background';
-import { randomThemes } from '../data/randomThemes';
 
 const router = useRouter();
-const emit = defineEmits<(e: 'start', data: MovieTemplate) => void>();
+// 使用 hook 获取游戏开始方法
+const { loadGameData } = useGameState();
 
 // Persisted State using useStorage
-/** Game mode selection: 'wizard' for guided creation, 'free' for free text input */
-const mode = useStorage<'wizard' | 'free'>('mg_mode', 'wizard');
 /** The main theme or topic of the movie game */
 const theme = useStorage('mg_theme', '');
 /** The detailed synopsis or storyline */
@@ -43,17 +44,27 @@ const selectedGenres = useStorage<string[]>('mg_genres', []); // Added genres
 const characters = useStorage<CharacterInput[]>('mg_characters', [
   { name: '主角', description: '故事的核心人物', gender: '男', isMain: true },
 ]);
-/** Free input text for 'free' mode */
-const freeInput = useStorage('mg_free_input', '');
+/** GLM 的默认请求地址（用于判定“是否被修改”） */
+const DEFAULT_GLM_BASE_URL =
+  'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+/** GLM 的默认模型（用于判定“是否被修改”） */
+const DEFAULT_GLM_MODEL = 'glm-4.6v-flash';
+
 /** API key for GLM service */
 const glmApiKey = useStorage('mg_glm_api_key', '');
 /** Base URL for GLM service */
-const glmBaseUrl = useStorage(
-  'mg_glm_base_url',
-  'https://open.bigmodel.cn/api/paas/v4/chat/completions',
-);
+const glmBaseUrl = useStorage('mg_glm_base_url', DEFAULT_GLM_BASE_URL);
 /** Selected GLM model */
-const glmModel = useStorage('mg_glm_model', 'glm-4.6v-flash');
+const glmModel = useStorage('mg_glm_model', DEFAULT_GLM_MODEL);
+
+/**
+ * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。
+ */
+const securityLocked = computed(() => {
+  const baseUrlTouched = glmBaseUrl.value.trim() !== DEFAULT_GLM_BASE_URL;
+  const modelTouched = glmModel.value.trim() !== DEFAULT_GLM_MODEL;
+  return baseUrlTouched || modelTouched;
+});
 
 // Patch legacy data missing gender
 characters.value.forEach((c) => {
@@ -131,10 +142,12 @@ const dicePosition = ref({ top: 0, left: 0, width: 0, height: 0 });
 const diceRotation = ref({ x: 0, y: 90, z: 0, translateY: 0 });
 // Track if we can interact (hover disabled during/after roll until user clicks again)
 const canInteract = ref(true);
+// Track recent theme indices to prevent duplicates within 3 rolls
+const recentThemeIndices = ref<number[]>([]);
 
 const handleRandomTheme = () => {
   if (isRolling.value) return;
-  
+
   // Capture position before starting roll
   if (diceBtnRef.value) {
     const rect = diceBtnRef.value.getBoundingClientRect();
@@ -142,28 +155,64 @@ const handleRandomTheme = () => {
       top: rect.top,
       left: rect.left,
       width: rect.width,
-      height: rect.height
+      height: rect.height,
     };
   }
 
   isRolling.value = true;
   canInteract.value = false;
 
-  // Random final result (index)
-  const finalResult = Math.floor(Math.random() * randomThemes.length);
+  // Random final result (index), excluding recent choices
+  // Get available indices that are not in recent history
+  const recentSet = new Set(recentThemeIndices.value);
+  const availableIndices = randomThemes
+    .map((_, idx) => idx)
+    .filter((idx) => !recentSet.has(idx));
+
+  // If all themes are in recent history (shouldn't happen with 7 themes and 3 rolls), reset
+  const candidates =
+    availableIndices.length > 0
+      ? availableIndices
+      : randomThemes.map((_, idx) => idx);
+
+  if (candidates.length === 0) {
+    isRolling.value = false;
+    canInteract.value = true;
+    return;
+  }
+
+  const picked = candidates[Math.floor(Math.random() * candidates.length)];
+  if (picked === undefined) {
+    isRolling.value = false;
+    canInteract.value = true;
+    return;
+  }
+
+  const finalResult = picked;
+
+  // Update recent history (keep only last 2 selections)
+  recentThemeIndices.value = [
+    ...recentThemeIndices.value.slice(-2),
+    finalResult,
+  ];
 
   // Target rotation for each face (1-6) - exact angles to show face to viewer
   const faceRotations = [
-    { x: 0, y: 90, z: 0 },     // 1: mapped to left (6 dots) to forbid 1 dot
-    { x: 0, y: 180, z: 0 },    // 2: back
-    { x: -90, y: 0, z: 0 },    // 3: top
-    { x: 90, y: 0, z: 0 },     // 4: bottom
-    { x: 0, y: -90, z: 0 },    // 5: right
-    { x: 0, y: 90, z: 0 },     // 6: left
+    { x: 0, y: 90, z: 0 }, // 1: mapped to left (6 dots) to forbid 1 dot
+    { x: 0, y: 180, z: 0 }, // 2: back
+    { x: -90, y: 0, z: 0 }, // 3: top
+    { x: 90, y: 0, z: 0 }, // 4: bottom
+    { x: 0, y: -90, z: 0 }, // 5: right
+    { x: 0, y: 90, z: 0 }, // 6: left
   ];
 
   // Map result index to dice face (0-5)
-  const targetRotation = faceRotations[finalResult % 6]!;
+  const targetRotation = faceRotations[finalResult % 6];
+  if (!targetRotation) {
+    isRolling.value = false;
+    canInteract.value = true;
+    return;
+  }
 
   // Normalize current rotation to find nearest equivalent position
   // This ensures smooth transition from current position
@@ -176,8 +225,12 @@ const handleRandomTheme = () => {
   const spinsY = 720 + Math.floor(Math.random() * 360);
 
   // Find the nearest target position that's >= current + spins
-  const targetX = targetRotation.x + Math.ceil((currentX + spinsX - targetRotation.x) / 360) * 360;
-  const targetY = targetRotation.y + Math.ceil((currentY + spinsY - targetRotation.y) / 360) * 360;
+  const targetX =
+    targetRotation.x +
+    Math.ceil((currentX + spinsX - targetRotation.x) / 360) * 360;
+  const targetY =
+    targetRotation.y +
+    Math.ceil((currentY + spinsY - targetRotation.y) / 360) * 360;
 
   // Animate rotation
   const duration = 1200;
@@ -188,7 +241,7 @@ const handleRandomTheme = () => {
     const progress = Math.min(elapsed / duration, 1);
 
     // Ease-out-quartic for realistic physics deceleration
-    const easeOut = 1 - Math.pow(1 - progress, 4);
+    const easeOut = 1 - (1 - progress) ** 4;
 
     // Interpolate from current to target
     const newX = currentX + (targetX - currentX) * easeOut;
@@ -199,7 +252,7 @@ const handleRandomTheme = () => {
     // Up is negative Y. Max height 50px to keep within container visual bounds
     // Use sine wave for arc: sin(0) = 0, sin(PI/2) = 1, sin(PI) = 0
     const jumpY = Math.sin(progress * Math.PI) * -50;
-    
+
     // Add some scale wobble for "squash and stretch" feeling (optional but nice)
     // const scale = 1 + Math.sin(progress * Math.PI * 4) * 0.1;
 
@@ -218,7 +271,13 @@ const handleRandomTheme = () => {
       requestAnimationFrame(animate);
     } else {
       // Animation complete - apply theme configuration
-      const config = randomThemes[finalResult]!;
+      const config = randomThemes[finalResult];
+      if (!config) {
+        isRolling.value = false;
+        canInteract.value = true;
+        return;
+      }
+
       theme.value = config.theme;
 
       // Set genres if available
@@ -307,7 +366,8 @@ const handleExpandSynopsis = async () => {
         isSettingsOpen.value = true;
         apiKeyRequired.value = true;
       }
-      isRateLimitError.value = e.code === 'TOO_MANY_REQUESTS' || e.status === 429;
+      isRateLimitError.value =
+        e.code === 'TOO_MANY_REQUESTS' || e.status === 429;
       // Show the actual error message from backend
       error.value = e.message || '扩写失败，请重试';
     } else {
@@ -350,7 +410,8 @@ const handleExpandCharacter = async () => {
         isSettingsOpen.value = true;
         apiKeyRequired.value = true;
       }
-      isRateLimitError.value = e.code === 'TOO_MANY_REQUESTS' || e.status === 429;
+      isRateLimitError.value =
+        e.code === 'TOO_MANY_REQUESTS' || e.status === 429;
       // Show the actual error message from backend
       error.value = e.message || '角色生成失败';
     } else {
@@ -399,7 +460,7 @@ const selectCogViewSize = (): '1024x1024' | '864x1152' | '1152x864' => {
 
 /**
  * Main function to generate the game.
- * Navigates to /generating page with parameters.
+ * Stores parameters in localStorage and navigates to /generating page.
  */
 const handleGenerate = async () => {
   // Validate inputs
@@ -408,22 +469,23 @@ const handleGenerate = async () => {
     return;
   }
 
-  // Prepare parameters for the generating page
-  const params = new URLSearchParams();
-  params.set('mode', mode.value);
-  params.set('theme', theme.value);
-  if (synopsis.value) params.set('synopsis', synopsis.value);
-  if (selectedGenres.value.length > 0) params.set('genre', JSON.stringify(selectedGenres.value));
-  if (characters.value.length > 0) params.set('characters', JSON.stringify(characters.value));
-  if (freeInput.value) params.set('freeInput', freeInput.value);
-  params.set('language', navigator.language);
-  params.set('size', selectCogViewSize());
-  if (glmApiKey.value.trim()) params.set('apiKey', glmApiKey.value.trim());
-  if (glmBaseUrl.value.trim()) params.set('baseUrl', glmBaseUrl.value.trim());
-  if (glmModel.value.trim()) params.set('model', glmModel.value.trim());
+  // Prepare parameters and store in localStorage
+  const generateParams = {
+    mode: 'wizard',
+    theme: theme.value,
+    synopsis: synopsis.value,
+    genre: selectedGenres.value,
+    characters: characters.value,
+    language: navigator.language,
+    size: selectCogViewSize(),
+    apiKey: glmApiKey.value.trim(),
+    baseUrl: glmBaseUrl.value.trim(),
+    model: glmModel.value.trim(),
+  };
+  localStorage.setItem('mg_generate_params', JSON.stringify(generateParams));
 
-  // Navigate to generating page
-  router.push({ path: '/generating', query: { params: params.toString() } });
+  // Navigate to generating page (no query params needed)
+  router.push({ path: '/generating' });
 };
 
 const handleGeneratePrompt = async () => {
@@ -436,12 +498,11 @@ const handleGeneratePrompt = async () => {
   try {
     const size = selectCogViewSize();
     const text = await generatePrompt({
-      mode: mode.value,
+      mode: 'wizard',
       theme: theme.value,
       synopsis: synopsis.value,
       genre: selectedGenres.value,
       characters: characters.value,
-      freeInput: freeInput.value,
       language: navigator.language,
       size,
       apiKey: apiKey || undefined,
@@ -469,6 +530,13 @@ const openImport = () => {
   isImportOpen.value = true;
 };
 
+/**
+ * 打开历史记录页。
+ */
+const openRecords = () => {
+  router.push('/records');
+};
+
 const onImportFile = (e: Event) => {
   const input = e.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -484,13 +552,13 @@ const onImportFile = (e: Event) => {
   reader.readAsText(file);
 };
 
-const confirmImport = () => {
+const parseImportData = (): MovieTemplate | null => {
   importError.value = '';
   try {
     const raw = importText.value.trim();
     if (!raw) {
       importError.value = '请粘贴或上传 JSON';
-      return;
+      return null;
     }
     const data = JSON.parse(raw) as MovieTemplate;
     // biome-ignore lint/suspicious/noExplicitAny: Dynamic data
@@ -499,17 +567,37 @@ const confirmImport = () => {
     const endings = (data as any)?.endings;
     if (!nodes || typeof nodes !== 'object') {
       importError.value = 'JSON 缺少 nodes';
-      return;
+      return null;
     }
     if (!endings || typeof endings !== 'object') {
       importError.value = 'JSON 缺少 endings';
-      return;
+      return null;
     }
-    isImportOpen.value = false;
-    emit('start', data);
+    return data;
   } catch {
     importError.value = 'JSON 解析失败，请检查格式';
+    return null;
   }
+};
+
+const confirmImportStart = () => {
+  const data = parseImportData();
+  if (!data) return;
+  isImportOpen.value = false;
+  loadGameData(data, 'import', '/game');
+};
+
+const confirmImportDesign = () => {
+  if (securityLocked.value) {
+    importError.value =
+      '检测到本地模型配置已被修改（Base URL / Model）。为确保数据安全，已禁用设计功能。请先在设置中恢复默认配置。';
+    return;
+  }
+
+  const data = parseImportData();
+  if (!data) return;
+  isImportOpen.value = false;
+  loadGameData(data, 'import', '/design');
 };
 
 const copyPrompt = async () => {
@@ -549,7 +637,10 @@ onMounted(() => {
       // Only show if error occurred within last minute (avoid stale errors)
       if (Date.now() - errorData.timestamp < 60000) {
         error.value = errorData.message;
-        if (errorData.code === 'API_KEY_REQUIRED' || errorData.code === 'TOO_MANY_REQUESTS') {
+        if (
+          errorData.code === 'API_KEY_REQUIRED' ||
+          errorData.code === 'TOO_MANY_REQUESTS'
+        ) {
           apiKeyRequired.value = true;
           isSettingsOpen.value = true;
         }
@@ -738,8 +829,17 @@ onMounted(() => {
 
             <div v-if="importError" class="mt-4 bg-red-500/10 border border-red-500/20 text-red-500 p-3 rounded-xl text-sm text-center">{{ importError }}</div>
 
-            <div class="mt-5 flex items-center justify-end gap-3">
-              <button @click="confirmImport" class="relative inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 text-white font-bold hover:shadow-[0_0_30px_rgba(168,85,247,0.35)] hover:scale-[1.01] active:scale-[0.99] transition-all">
+            <div class="mt-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
+              <button
+                @click="confirmImportDesign"
+                :disabled="securityLocked"
+                class="relative inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-black/35 border border-white/10 text-white/90 font-bold hover:bg-black/55 hover:shadow-[0_0_30px_rgba(34,211,238,0.2)] hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+              >
+                <Wand2 class="w-4 h-4 text-cyan-300" />
+                导入并设计
+              </button>
+
+              <button @click="confirmImportStart" class="relative inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 text-white font-bold hover:shadow-[0_0_30px_rgba(168,85,247,0.35)] hover:scale-[1.01] active:scale-[0.99] transition-all">
                 <ImportIcon class="w-4 h-4" />
                 导入并开始
               </button>
@@ -882,6 +982,13 @@ onMounted(() => {
                         title="导入存档"
                     >
                         <ImportIcon class="w-4 h-4 md:w-5 md:h-5 text-white/70 group-hover:text-white transition-colors" />
+                    </button>
+                    <button
+                        @click="openRecords"
+                        class="p-1.5 md:p-2 rounded-full bg-black/30 backdrop-blur-md border border-white/10 hover:bg-white/10 hover:border-purple-500/50 transition-all group"
+                        title="历史记录"
+                    >
+                        <History class="w-4 h-4 md:w-5 md:h-5 text-white/70 group-hover:text-white transition-colors" />
                     </button>
                     <button
                         @click="isSettingsOpen = true"

@@ -8,7 +8,8 @@ pub(crate) struct AppState {
 }
 
 pub(crate) async fn init_pool() -> Result<PgPool, sqlx::Error> {
-    let database_url = std::env::var("MOVIE_GAMES_DATABASE_URL").expect("MOVIE_GAMES_DATABASE_URL is required");
+    let database_url =
+        std::env::var("MOVIE_GAMES_DATABASE_URL").expect("MOVIE_GAMES_DATABASE_URL is required");
     PgPoolOptions::new()
         .max_connections(16)
         .connect(&database_url)
@@ -20,9 +21,7 @@ pub(crate) async fn init_db(db: &PgPool) -> Result<(), sqlx::Error> {
     // 注意：在生产环境，建议通过 sqlx cli 或 CI/CD 流程执行迁移，
     // 但为了简化部署，这里保留了自动迁移功能。
     // 如果用户希望手动执行，可以注释掉此行，并手动运行 migrations 目录下的 SQL。
-    sqlx::migrate!("./migrations")
-        .run(db)
-        .await?;
+    sqlx::migrate!("./migrations").run(db).await?;
 
     Ok(())
 }
@@ -160,10 +159,11 @@ pub(crate) async fn get_request_owner(
     db: &PgPool,
     id: Uuid,
 ) -> Result<Option<(String, String)>, sqlx::Error> {
-    let row: Option<(String, String)> = sqlx::query_as("select client_ip, status from glm_requests where id = $1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?;
+    let row: Option<(String, String)> =
+        sqlx::query_as("select client_ip, status from glm_requests where id = $1")
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
     Ok(row)
 }
 
@@ -180,15 +180,40 @@ pub(crate) async fn set_share_status(
     Ok(())
 }
 
-pub(crate) async fn get_shared_game(
+pub(crate) async fn delete_game_by_request_id(db: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+    let mut tx = db.begin().await?;
+
+    sqlx::query("delete from records where request_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query("delete from shared_records where request_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query("delete from glm_requests where id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn get_game_for_play(
     db: &PgPool,
     id: Uuid,
-) -> Result<Option<serde_json::Value>, sqlx::Error> {
-    let row: Option<(serde_json::Value,)> = sqlx::query_as("select processed_response from glm_requests where id = $1 and shared = true")
-        .bind(id)
-        .fetch_optional(db)
-        .await?;
-    Ok(row.map(|r| r.0))
+) -> Result<Option<(serde_json::Value, bool, String)>, sqlx::Error> {
+    let row: Option<(serde_json::Value, bool, String)> = sqlx::query_as(
+        "select processed_response, shared, client_ip from glm_requests where id = $1 and status = 'success'",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+
+    Ok(row)
 }
 
 pub(crate) async fn record_visit(
@@ -208,4 +233,101 @@ pub(crate) async fn record_visit(
         .execute(db)
         .await?;
     Ok(())
+}
+
+pub(crate) async fn upsert_shared_record(
+    db: &PgPool,
+    request_id: Uuid,
+    shared_ip: &str,
+    shared_user_agent: Option<&str>,
+) -> Result<Uuid, sqlx::Error> {
+    let id = Uuid::new_v4();
+    let row: (Uuid,) = sqlx::query_as(
+        "insert into shared_records (id, request_id, shared_ip, shared_user_agent) values ($1, $2, $3, $4) \
+         on conflict (request_id) do update set shared_at = now(), shared_ip = excluded.shared_ip, shared_user_agent = excluded.shared_user_agent \
+         returning id",
+    )
+    .bind(id)
+    .bind(request_id)
+    .bind(shared_ip)
+    .bind(shared_user_agent)
+    .fetch_one(db)
+    .await?;
+
+    Ok(row.0)
+}
+
+pub(crate) async fn get_shared_record_id_by_request_id(
+    db: &PgPool,
+    request_id: Uuid,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    let row: Option<(Uuid,)> =
+        sqlx::query_as("select id from shared_records where request_id = $1")
+            .bind(request_id)
+            .fetch_optional(db)
+            .await?;
+    Ok(row.map(|r| r.0))
+}
+
+pub(crate) async fn get_shared_record_meta_by_request_id(
+    db: &PgPool,
+    request_id: Uuid,
+) -> Result<Option<(Option<Uuid>, bool, Option<String>, String)>, sqlx::Error> {
+    let row: Option<(Option<Uuid>, bool, Option<String>, String)> = sqlx::query_as(
+        "select sr.id, gr.shared, sr.shared_at::text, gr.client_ip \
+         from glm_requests gr \
+         left join shared_records sr on sr.request_id = gr.id \
+         where gr.id = $1",
+    )
+    .bind(request_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
+}
+
+pub(crate) async fn list_shared_records_by_ids(
+    db: &PgPool,
+    ids: &[Uuid],
+    owner_ip: &str,
+) -> Result<
+    Vec<(
+        Uuid,
+        Uuid,
+        String,
+        bool,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+    )>,
+    sqlx::Error,
+> {
+    let rows = sqlx::query_as(
+        "select \
+            sr.id, \
+            sr.request_id, \
+            sr.shared_at::text, \
+            gr.shared, \
+            (gr.processed_response->>'title') as title, \
+            (gr.processed_response->'meta'->>'synopsis') as synopsis, \
+            (gr.processed_response->'meta'->>'genre') as genre, \
+            (gr.processed_response->'meta'->>'language') as language, \
+            (select count(*) from records r where r.request_id = sr.request_id) as play_count \
+         from shared_records sr \
+         join glm_requests gr on gr.id = sr.request_id \
+         where sr.id = any($1) \
+           and (
+             gr.client_ip = $2
+             or ($2 = '::1' and gr.client_ip = '127.0.0.1')
+             or ($2 = '127.0.0.1' and gr.client_ip = '::1')
+           ) \
+         order by sr.shared_at desc",
+    )
+    .bind(ids)
+    .bind(owner_ip)
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows)
 }

@@ -7,17 +7,19 @@ use axum::{
 use serde::Serialize;
 use serde_json::json;
 use sqlx::PgPool;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use url::Url;
 use uuid::Uuid;
 
 use crate::api_types::{
-    CharacterInput, ExpandCharacterRequest, ExpandWorldviewRequest, GenerateRequest,
-    GenerateResponse, ShareRequest,
+    CharacterInput, DeleteTemplateRequest, ExpandCharacterRequest, ExpandWorldviewRequest,
+    GenerateRequest, GenerateResponse, RecordsListRequest, ShareRequest, UpdateTemplateRequest,
 };
 use crate::db::{
-    begin_glm_request_log, finish_glm_request_log, get_request_owner,
-    record_visit, save_processed_response, set_share_status, AppState, DbError,
+    begin_glm_request_log, delete_game_by_request_id, finish_glm_request_log, get_request_owner,
+    get_shared_record_id_by_request_id, get_shared_record_meta_by_request_id,
+    list_shared_records_by_ids, record_visit, save_processed_response, set_share_status,
+    upsert_shared_record, AppState, DbError,
 };
 use crate::glm;
 use crate::images::{
@@ -27,7 +29,8 @@ use crate::images::{
 use crate::prompt::{clean_json, construct_prompt};
 use crate::template::{
     convert_lite_to_full, normalize_character_ids, normalize_template_endings,
-    normalize_template_nodes, sanitize_template_graph, MovieTemplateLite,
+    normalize_template_nodes, sanitize_affinity_effects, sanitize_template_graph,
+    MovieTemplateLite,
 };
 
 // ===== 统一响应格式 =====
@@ -86,7 +89,10 @@ fn success_response<T: Serialize>(data: T) -> Json<ApiResponse<T>> {
     Json(ApiResponse::success(data))
 }
 
-fn error_response(code: impl Into<String>, msg: impl Into<String>) -> (StatusCode, Json<ApiResponse<()>>) {
+fn error_response(
+    code: impl Into<String>,
+    msg: impl Into<String>,
+) -> (StatusCode, Json<ApiResponse<()>>) {
     let code_str = code.into();
     let status = match code_str.as_str() {
         CODE_TOO_MANY_REQUESTS => StatusCode::TOO_MANY_REQUESTS,
@@ -95,11 +101,14 @@ fn error_response(code: impl Into<String>, msg: impl Into<String>) -> (StatusCod
         "NOT_FOUND" => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    (status, Json(ApiResponse {
-        code: code_str,
-        msg: msg.into(),
-        data: None,
-    }))
+    (
+        status,
+        Json(ApiResponse {
+            code: code_str,
+            msg: msg.into(),
+            data: None,
+        }),
+    )
 }
 
 fn db_error_response(e: DbError) -> (StatusCode, Json<ApiResponse<()>>) {
@@ -108,6 +117,67 @@ fn db_error_response(e: DbError) -> (StatusCode, Json<ApiResponse<()>>) {
 
 fn rate_limit_response(msg: impl Into<String>) -> (StatusCode, Json<ApiResponse<()>>) {
     error_response(CODE_TOO_MANY_REQUESTS, msg)
+}
+
+fn is_trusted_proxy_hop(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.segments()[0] & 0xfe00 == 0xfc00
+                || v6.segments()[0] & 0xffc0 == 0xfe80
+        }
+    }
+}
+
+fn normalize_ip_candidate(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    if s.parse::<IpAddr>().is_ok() {
+        return Some(s.to_string());
+    }
+
+    if s.contains('.') {
+        if let Some((maybe_ip, maybe_port)) = s.rsplit_once(':') {
+            if maybe_port.chars().all(|c| c.is_ascii_digit()) && maybe_ip.parse::<IpAddr>().is_ok()
+            {
+                return Some(maybe_ip.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn resolve_client_ip(headers: &HeaderMap, addr: &SocketAddr) -> String {
+    let peer_ip = addr.ip();
+
+    if !is_trusted_proxy_hop(peer_ip) {
+        return peer_ip.to_string();
+    }
+
+    let candidate = headers
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .and_then(normalize_ip_candidate)
+        .or_else(|| {
+            headers
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.split(',').next())
+                .and_then(normalize_ip_candidate)
+        });
+
+    candidate.unwrap_or_else(|| peer_ip.to_string())
+}
+
+fn is_owner_ip(owner_ip: &str, request_ip: &str) -> bool {
+    owner_ip == request_ip
+        || (owner_ip == "127.0.0.1" && request_ip == "::1")
+        || (owner_ip == "::1" && request_ip == "127.0.0.1")
 }
 
 struct GlmRequestGuard {
@@ -207,9 +277,9 @@ pub(crate) async fn generate_prompt(
 pub(crate) async fn share_game(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<ShareRequest>,
-) -> Result<Json<ApiResponse<()>>, Response> {
-    // 1. Check ownership and status
+) -> Result<Json<ApiResponse<serde_json::Value>>, Response> {
     let request_info = get_request_owner(&state.db, payload.id)
         .await
         .map_err(|e| {
@@ -223,28 +293,43 @@ pub(crate) async fn share_game(
 
     if status != "success" {
         return Err(
-            error_response("FORBIDDEN", "Game generation not successful, cannot share").into_response(),
+            error_response("FORBIDDEN", "Game generation not successful, cannot share")
+                .into_response(),
         );
     }
 
-    // Simple IP check. In production behind proxy, check X-Forwarded-For headers.
-    // For this environment, we assume direct connection or consistent IP handling.
-    // Convert IPv6 mapped IPv4 to standard IPv4 if necessary for string comparison
-    // but here we just use string equality.
-    let request_ip = addr.ip().to_string();
-
-    // Allow localhost/loopback matching easily
-    let is_owner = owner_ip == request_ip || (owner_ip == "127.0.0.1" && request_ip == "::1");
+    let request_ip = resolve_client_ip(&headers, &addr);
+    let is_owner = is_owner_ip(&owner_ip, &request_ip);
 
     if !is_owner {
-        // If strictly required as per user instruction:
-        // "backend must verify data's ip must match current user, otherwise return 403"
         return Err(
             error_response("FORBIDDEN", "You are not the owner of this game").into_response(),
         );
     }
 
-    // 2. Update status
+    let shared_record_id = if payload.shared {
+        let ua = headers
+            .get("user-agent")
+            .and_then(|h| h.to_str().ok())
+            .filter(|s| !s.trim().is_empty());
+
+        let id = upsert_shared_record(&state.db, payload.id, &request_ip, ua)
+            .await
+            .map_err(|e| {
+                eprintln!("Database error: {}", e);
+                db_error_response(DbError::InternalError).into_response()
+            })?;
+
+        Some(id)
+    } else {
+        get_shared_record_id_by_request_id(&state.db, payload.id)
+            .await
+            .map_err(|e| {
+                eprintln!("Database error: {}", e);
+                db_error_response(DbError::InternalError).into_response()
+            })?
+    };
+
     set_share_status(&state.db, payload.id, payload.shared)
         .await
         .map_err(|e| {
@@ -252,7 +337,106 @@ pub(crate) async fn share_game(
             db_error_response(DbError::InternalError).into_response()
         })?;
 
-    Ok(success_response(()))
+    Ok(success_response(json!({
+        "sharedRecordId": shared_record_id
+    })))
+}
+
+pub(crate) async fn update_template(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateTemplateRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, Response> {
+    let request_info = get_request_owner(&state.db, payload.id)
+        .await
+        .map_err(|e| {
+            eprintln!("Database error: {}", e);
+            db_error_response(DbError::InternalError).into_response()
+        })?;
+
+    let Some((owner_ip, status)) = request_info else {
+        return Err(error_response("NOT_FOUND", "Game not found").into_response());
+    };
+
+    if status != "success" {
+        return Err(
+            error_response("FORBIDDEN", "Game generation not successful, cannot update")
+                .into_response(),
+        );
+    }
+
+    let request_ip = resolve_client_ip(&headers, &addr);
+    let is_owner = is_owner_ip(&owner_ip, &request_ip);
+
+    if !is_owner {
+        return Err(
+            error_response("FORBIDDEN", "You are not the owner of this game").into_response(),
+        );
+    }
+
+    let mut template = payload.template;
+
+    normalize_character_ids(&mut template);
+    normalize_template_endings(&mut template);
+    sanitize_template_graph(&mut template);
+    normalize_template_nodes(&mut template);
+    sanitize_affinity_effects(&mut template);
+
+    ensure_avatar_fallbacks(&mut template, None);
+
+    save_processed_response(
+        &state.db,
+        payload.id,
+        &serde_json::to_value(&template).unwrap_or(json!({})),
+    )
+    .await
+    .map_err(|e| {
+        eprintln!("Database error: {}", e);
+        db_error_response(DbError::InternalError).into_response()
+    })?;
+
+    Ok(success_response(
+        serde_json::to_value(&template).unwrap_or(json!({})),
+    ))
+}
+
+pub(crate) async fn delete_template(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(payload): Json<DeleteTemplateRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, Response> {
+    let request_info = get_request_owner(&state.db, payload.id)
+        .await
+        .map_err(|e| {
+            eprintln!("Database error: {}", e);
+            db_error_response(DbError::InternalError).into_response()
+        })?;
+
+    let Some((owner_ip, _status)) = request_info else {
+        return Err(error_response("NOT_FOUND", "Game not found").into_response());
+    };
+
+    let request_ip = resolve_client_ip(&headers, &addr);
+    let is_owner = is_owner_ip(&owner_ip, &request_ip);
+
+    if !is_owner {
+        return Err(
+            error_response("FORBIDDEN", "You are not the owner of this game").into_response(),
+        );
+    }
+
+    delete_game_by_request_id(&state.db, payload.id)
+        .await
+        .map_err(|e| {
+            eprintln!("Database error: {}", e);
+            db_error_response(DbError::InternalError).into_response()
+        })?;
+
+    Ok(success_response(json!({
+        "deleted": true
+    })))
 }
 
 pub(crate) async fn get_shared_game(
@@ -261,22 +445,27 @@ pub(crate) async fn get_shared_game(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, Response> {
-    // 1. Get game data if shared
-    let data = crate::db::get_shared_game(&state.db, id)
+    let row = crate::db::get_game_for_play(&state.db, id)
         .await
         .map_err(|e| {
             eprintln!("Database error: {}", e);
             db_error_response(DbError::InternalError).into_response()
         })?;
 
-    let Some(data) = data else {
-        // Not found or not shared
-        return Err(error_response("NOT_FOUND", "Game not found or not shared").into_response());
+    let Some((data, shared, owner_ip)) = row else {
+        return Err(error_response("NOT_FOUND", "Game not found").into_response());
     };
+
+    let request_ip = resolve_client_ip(&headers, &addr);
+    let is_owner = is_owner_ip(&owner_ip, &request_ip);
+
+    if !shared && !is_owner {
+        return Err(error_response("NOT_FOUND", "Game not found").into_response());
+    }
 
     // 2. Record visit (async, fire and forget)
     let db = state.db.clone();
-    let client_ip = addr.ip().to_string();
+    let client_ip = resolve_client_ip(&headers, &addr);
     let user_agent = headers
         .get("user-agent")
         .and_then(|h| h.to_str().ok())
@@ -296,18 +485,103 @@ pub(crate) async fn get_shared_game(
     Ok(success_response(data))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SharedRecordListItem {
+    id: Uuid,
+    request_id: Uuid,
+    title: String,
+    shared_at: String,
+    shared: bool,
+    synopsis: String,
+    genre: String,
+    language: String,
+    play_count: i64,
+}
+
+pub(crate) async fn get_shared_record_meta(
+    State(state): State<AppState>,
+    Path(request_id): Path<Uuid>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<serde_json::Value>>, Response> {
+    let request_ip = resolve_client_ip(&headers, &addr);
+
+    let meta = get_shared_record_meta_by_request_id(&state.db, request_id)
+        .await
+        .map_err(|e| {
+            eprintln!("Database error: {}", e);
+            db_error_response(DbError::InternalError).into_response()
+        })?;
+
+    let Some((shared_record_id, shared, shared_at, owner_ip)) = meta else {
+        return Err(error_response("NOT_FOUND", "Record not found").into_response());
+    };
+
+    let is_owner = is_owner_ip(&owner_ip, &request_ip);
+
+    Ok(success_response(json!({
+        "sharedRecordId": if is_owner { shared_record_id.map(|v| json!(v)).unwrap_or(serde_json::Value::Null) } else { serde_json::Value::Null },
+        "requestId": request_id,
+        "shared": shared,
+        "sharedAt": shared_at.map(|v| json!(v)).unwrap_or(serde_json::Value::Null),
+        "isOwner": is_owner
+    })))
+}
+
+pub(crate) async fn list_records(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(payload): Json<RecordsListRequest>,
+) -> Result<Json<ApiResponse<Vec<SharedRecordListItem>>>, Response> {
+    let owner_ip = resolve_client_ip(&headers, &addr);
+
+    if payload.ids.is_empty() {
+        return Ok(success_response(Vec::<SharedRecordListItem>::new()));
+    }
+
+    if payload.ids.len() > 200 {
+        return Err(error_response(CODE_BAD_REQUEST, "Too many ids").into_response());
+    }
+
+    let rows = list_shared_records_by_ids(&state.db, &payload.ids, &owner_ip)
+        .await
+        .map_err(|e| {
+            eprintln!("Database error: {}", e);
+            db_error_response(DbError::InternalError).into_response()
+        })?;
+
+    let items = rows
+        .into_iter()
+        .map(
+            |(id, request_id, shared_at, shared, title, synopsis, genre, language, play_count)| {
+                SharedRecordListItem {
+                    id,
+                    request_id,
+                    title: title.unwrap_or_else(|| "Untitled".to_string()),
+                    shared_at,
+                    shared,
+                    synopsis: synopsis.unwrap_or_default(),
+                    genre: genre.unwrap_or_default(),
+                    language: language.unwrap_or_default(),
+                    play_count,
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+
+    Ok(success_response(items))
+}
+
 pub(crate) async fn generate(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(payload): Json<GenerateRequest>,
 ) -> Result<Response, Response> {
-    let client_ip = headers
-        .get("x-real-ip")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| addr.ip().to_string());
-    
+    let client_ip = resolve_client_ip(&headers, &addr);
+
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
@@ -426,7 +700,11 @@ pub(crate) async fn generate(
                 Some(response_time_ms),
             )
             .await;
-            return Err(error_response("API_KEY_REQUIRED", "API Key is required. Please configure your own API Key in settings.").into_response());
+            return Err(error_response(
+                "API_KEY_REQUIRED",
+                "API Key is required. Please configure your own API Key in settings.",
+            )
+            .into_response());
         }
     };
 
@@ -467,7 +745,7 @@ pub(crate) async fn generate(
             let error_message = if let Some(code) = glm::extract_glm_error_code(&error_text) {
                 format!("GLM API 返回错误码 {}: {}", code, error_text)
             } else {
-                format!("{}", error_text)
+                error_text.clone()
             };
 
             guard.consume();
@@ -512,17 +790,18 @@ pub(crate) async fn generate(
         return Err(error_response(CODE_INTERNAL_ERROR, error_text).into_response());
     }
 
-    let text_response = response
-        .text()
-        .await
-        .map_err(|e| {
-             // Cannot use guard here as we are returning Err, but we can't consume guard and return err easily without scope
-             // Actually we can just log failure and return
-             // We'll let the guard drop handle the "cancel" status if read fails, or we can manually log failure.
-             // But guard.consume() takes ownership.
-             // It is better to let guard handle "cancel" if read fails, or log it as internal error.
-             error_response(CODE_INTERNAL_ERROR, format!("Failed to read response body: {}", e)).into_response()
-        })?;
+    let text_response = response.text().await.map_err(|e| {
+        // Cannot use guard here as we are returning Err, but we can't consume guard and return err easily without scope
+        // Actually we can just log failure and return
+        // We'll let the guard drop handle the "cancel" status if read fails, or we can manually log failure.
+        // But guard.consume() takes ownership.
+        // It is better to let guard handle "cancel" if read fails, or log it as internal error.
+        error_response(
+            CODE_INTERNAL_ERROR,
+            format!("Failed to read response body: {}", e),
+        )
+        .into_response()
+    })?;
 
     // Try to parse as generic JSON first to check for "error" field
     // (GLM sometimes returns 200 OK with "error" in body)
@@ -532,7 +811,8 @@ pub(crate) async fn generate(
             let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
 
             if glm::is_rate_limit_error(&text_response) {
-                let error_message = if let Some(code) = glm::extract_glm_error_code(&text_response) {
+                let error_message = if let Some(code) = glm::extract_glm_error_code(&text_response)
+                {
                     format!("GLM API 返回错误码 {}: {}", code, text_response)
                 } else {
                     text_response.clone()
@@ -579,7 +859,9 @@ pub(crate) async fn generate(
                 Some(response_time_ms),
             )
             .await;
-            return Err(error_response(CODE_INTERNAL_ERROR, "Failed to parse GLM response").into_response());
+            return Err(
+                error_response(CODE_INTERNAL_ERROR, "Failed to parse GLM response").into_response(),
+            );
         }
     };
 
@@ -603,7 +885,10 @@ pub(crate) async fn generate(
                 Some(response_time_ms),
             )
             .await;
-            return Err(error_response(CODE_INTERNAL_ERROR, "Invalid GLM response structure").into_response());
+            return Err(
+                error_response(CODE_INTERNAL_ERROR, "Invalid GLM response structure")
+                    .into_response(),
+            );
         }
     };
 
@@ -630,7 +915,10 @@ pub(crate) async fn generate(
                 Some(response_time_ms),
             )
             .await;
-            return Err(error_response(CODE_INTERNAL_ERROR, format!("JSON Parse Error: {}", e)).into_response());
+            return Err(
+                error_response(CODE_INTERNAL_ERROR, format!("JSON Parse Error: {}", e))
+                    .into_response(),
+            );
         }
     };
 
@@ -645,13 +933,14 @@ pub(crate) async fn generate(
 
     // NO character modifications - preserve GLM's original output
     // ensure_request_characters_present(&mut template, &payload);
-    
+
     // User insisted: "Must return character info passed by frontend exactly as is"
     crate::template::enforce_character_consistency(&mut template, payload.characters.clone());
 
     normalize_character_ids(&mut template);
     normalize_template_endings(&mut template);
     sanitize_template_graph(&mut template);
+    sanitize_affinity_effects(&mut template);
 
     // Image generation logic
     let should_generate_images = if using_override_key {
@@ -692,7 +981,7 @@ pub(crate) async fn generate(
         )
         .await;
     } else {
-         template.background_image_base64 = Some(fallback_background_data_uri(
+        template.background_image_base64 = Some(fallback_background_data_uri(
             &template.title,
             &template.meta.synopsis,
         ));
@@ -701,7 +990,13 @@ pub(crate) async fn generate(
     ensure_avatar_fallbacks(&mut template, payload.characters.as_ref());
 
     // Save the processed template
-    if let Err(e) = save_processed_response(&state.db, request_id, &serde_json::to_value(&template).unwrap_or(json!({}))).await {
+    if let Err(e) = save_processed_response(
+        &state.db,
+        request_id,
+        &serde_json::to_value(&template).unwrap_or(json!({})),
+    )
+    .await
+    {
         eprintln!("Failed to save processed response: {}", e);
     }
 
@@ -719,7 +1014,8 @@ pub(crate) async fn generate(
     Ok(success_response(GenerateResponse {
         id: request_id,
         template,
-    }).into_response())
+    })
+    .into_response())
 }
 
 pub(crate) async fn expand_worldview(
@@ -733,7 +1029,7 @@ pub(crate) async fn expand_worldview(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .unwrap_or_else(|| addr.ip().to_string());
-    
+
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
@@ -846,14 +1142,14 @@ pub(crate) async fn expand_worldview(
         json!({
             "role": "user",
             "content": prompt
-        })
+        }),
     ];
 
     let request_body = json!({
         "model": model,
         "messages": messages,
         // expand_worldview does NOT force JSON object in original call (json_mode: false)
-        // "response_format": { "type": "json_object" }, 
+        // "response_format": { "type": "json_object" },
         "temperature": 1,
         "top_p": 0.95,
         "max_tokens": 4096 // Adjusted reasonable limit for text expansion
@@ -896,7 +1192,7 @@ pub(crate) async fn expand_worldview(
             let error_message = if let Some(code) = glm::extract_glm_error_code(&error_text) {
                 format!("GLM API 返回错误码 {}: {}", code, error_text)
             } else {
-                format!("{}", error_text)
+                error_text.clone()
             };
 
             guard.consume();
@@ -939,12 +1235,13 @@ pub(crate) async fn expand_worldview(
         return Err(error_response(CODE_INTERNAL_ERROR, error_text).into_response());
     }
 
-    let text_response = response
-        .text()
-        .await
-        .map_err(|e| {
-             error_response(CODE_INTERNAL_ERROR, format!("Failed to read response body: {}", e)).into_response()
-        })?;
+    let text_response = response.text().await.map_err(|e| {
+        error_response(
+            CODE_INTERNAL_ERROR,
+            format!("Failed to read response body: {}", e),
+        )
+        .into_response()
+    })?;
 
     if text_response.trim().is_empty() {
         eprintln!("GLM returned empty response body");
@@ -959,16 +1256,19 @@ pub(crate) async fn expand_worldview(
             Some(response_time_ms),
         )
         .await;
-        return Err(error_response(CODE_INTERNAL_ERROR, "GLM returned empty response body").into_response());
+        return Err(
+            error_response(CODE_INTERNAL_ERROR, "GLM returned empty response body").into_response(),
+        );
     }
 
     // Check for 200 OK error
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text_response) {
         if json_value.get("error").is_some() {
             println!("GLM returned 200 OK but with error body: {}", text_response);
-            
+
             if glm::is_rate_limit_error(&text_response) {
-                let error_message = if let Some(code) = glm::extract_glm_error_code(&text_response) {
+                let error_message = if let Some(code) = glm::extract_glm_error_code(&text_response)
+                {
                     format!("GLM API 返回错误码 {}: {}", code, text_response)
                 } else {
                     text_response.clone()
@@ -1015,7 +1315,9 @@ pub(crate) async fn expand_worldview(
                 Some(response_time_ms),
             )
             .await;
-            return Err(error_response(CODE_INTERNAL_ERROR, "Failed to parse GLM response").into_response());
+            return Err(
+                error_response(CODE_INTERNAL_ERROR, "Failed to parse GLM response").into_response(),
+            );
         }
     };
 
@@ -1032,7 +1334,10 @@ pub(crate) async fn expand_worldview(
                 Some(response_time_ms),
             )
             .await;
-            return Err(error_response(CODE_INTERNAL_ERROR, "Invalid GLM response structure").into_response());
+            return Err(
+                error_response(CODE_INTERNAL_ERROR, "Invalid GLM response structure")
+                    .into_response(),
+            );
         }
     };
 
@@ -1061,7 +1366,7 @@ pub(crate) async fn expand_character(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .unwrap_or_else(|| addr.ip().to_string());
-    
+
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
@@ -1232,7 +1537,7 @@ pub(crate) async fn expand_character(
         json!({
             "role": "user",
             "content": prompt
-        })
+        }),
     ];
 
     let request_body = json!({
@@ -1281,7 +1586,7 @@ pub(crate) async fn expand_character(
             let error_message = if let Some(code) = glm::extract_glm_error_code(&error_text) {
                 format!("GLM API 返回错误码 {}: {}", code, error_text)
             } else {
-                format!("{}", error_text)
+                error_text.clone()
             };
 
             guard.consume();
@@ -1324,12 +1629,13 @@ pub(crate) async fn expand_character(
         return Err(error_response(CODE_INTERNAL_ERROR, error_text).into_response());
     }
 
-    let text_response = response
-        .text()
-        .await
-        .map_err(|e| {
-             error_response(CODE_INTERNAL_ERROR, format!("Failed to read response body: {}", e)).into_response()
-        })?;
+    let text_response = response.text().await.map_err(|e| {
+        error_response(
+            CODE_INTERNAL_ERROR,
+            format!("Failed to read response body: {}", e),
+        )
+        .into_response()
+    })?;
 
     if text_response.trim().is_empty() {
         eprintln!("GLM returned empty response body");
@@ -1344,16 +1650,19 @@ pub(crate) async fn expand_character(
             Some(response_time_ms),
         )
         .await;
-        return Err(error_response(CODE_INTERNAL_ERROR, "GLM returned empty response body").into_response());
+        return Err(
+            error_response(CODE_INTERNAL_ERROR, "GLM returned empty response body").into_response(),
+        );
     }
 
     // Check for 200 OK error
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text_response) {
         if json_value.get("error").is_some() {
             println!("GLM returned 200 OK but with error body: {}", text_response);
-            
+
             if glm::is_rate_limit_error(&text_response) {
-                let error_message = if let Some(code) = glm::extract_glm_error_code(&text_response) {
+                let error_message = if let Some(code) = glm::extract_glm_error_code(&text_response)
+                {
                     format!("GLM API 返回错误码 {}: {}", code, text_response)
                 } else {
                     text_response.clone()
@@ -1400,7 +1709,9 @@ pub(crate) async fn expand_character(
                 Some(response_time_ms),
             )
             .await;
-            return Err(error_response(CODE_INTERNAL_ERROR, "Failed to parse GLM response").into_response());
+            return Err(
+                error_response(CODE_INTERNAL_ERROR, "Failed to parse GLM response").into_response(),
+            );
         }
     };
 
@@ -1417,7 +1728,10 @@ pub(crate) async fn expand_character(
                 Some(response_time_ms),
             )
             .await;
-            return Err(error_response(CODE_INTERNAL_ERROR, "Invalid GLM response structure").into_response());
+            return Err(
+                error_response(CODE_INTERNAL_ERROR, "Invalid GLM response structure")
+                    .into_response(),
+            );
         }
     };
 

@@ -115,6 +115,8 @@ fn convert_node_lite(key: String, lite: StoryNodeLite) -> types::StoryNode {
 struct ChoiceLite {
     text: Option<String>,
     next_node_id: Option<String>,
+    #[serde(default)]
+    affinity_effect: Option<types::AffinityEffect>,
 }
 
 impl From<ChoiceLite> for types::Choice {
@@ -122,6 +124,7 @@ impl From<ChoiceLite> for types::Choice {
         types::Choice {
             text: lite.text.unwrap_or_else(|| "Continue".to_string()),
             next_node_id: lite.next_node_id.unwrap_or_else(|| "END".to_string()),
+            affinity_effect: lite.affinity_effect,
         }
     }
 }
@@ -189,12 +192,25 @@ pub(crate) fn convert_lite_to_full(lite: MovieTemplateLite, language: &str) -> M
     }
 }
 
-
-
 pub(crate) fn normalize_character_ids(template: &mut MovieTemplate) {
-    for (k, c) in template.characters.iter_mut() {
-        c.id = k.clone();
+    // Rebuild characters map with name as key (as per user requirement)
+    let mut new_characters: HashMap<String, types::Character> = HashMap::new();
+
+    for (k, c) in template.characters.iter() {
+        let key = if !c.name.is_empty() {
+            c.name.clone()
+        } else if !c.id.is_empty() {
+            c.id.clone()
+        } else {
+            k.clone()
+        };
+
+        let mut char = c.clone();
+        char.id = key.clone();
+        new_characters.insert(key, char);
     }
+
+    template.characters = new_characters;
 }
 
 pub(crate) fn normalize_template_nodes(template: &mut MovieTemplate) {
@@ -209,7 +225,7 @@ pub(crate) fn normalize_template_nodes(template: &mut MovieTemplate) {
 
     let mut mapping: HashMap<String, String> = HashMap::new();
     let mut used: HashMap<String, usize> = HashMap::new();
-    
+
     // Sort keys to ensure deterministic order (optional but good for consistency)
     let mut keys: Vec<String> = template.nodes.keys().cloned().collect();
     keys.sort();
@@ -228,15 +244,15 @@ pub(crate) fn normalize_template_nodes(template: &mut MovieTemplate) {
         let new_key = if old_key == "start" || old_key == "n_start" {
             "start".to_string()
         } else {
-             // If key is "n_1", maybe we should strip "n_" to comply with "pure numbers"?
-             // Let's be safe and strip known prefixes if they exist, but otherwise keep as is.
-             if let Some(stripped) = old_key.strip_prefix("n_") {
-                 stripped.to_string()
-             } else if let Some(stripped) = old_key.strip_prefix("node_") {
-                 stripped.to_string()
-             } else {
-                 old_key.clone()
-             }
+            // If key is "n_1", maybe we should strip "n_" to comply with "pure numbers"?
+            // Let's be safe and strip known prefixes if they exist, but otherwise keep as is.
+            if let Some(stripped) = old_key.strip_prefix("n_") {
+                stripped.to_string()
+            } else if let Some(stripped) = old_key.strip_prefix("node_") {
+                stripped.to_string()
+            } else {
+                old_key.clone()
+            }
         };
 
         // Handle duplicates if stripping prefixes causes collisions (unlikely but possible)
@@ -386,38 +402,14 @@ pub(crate) fn sanitize_template_graph(template: &mut MovieTemplate) {
             continue;
         };
 
-        let mut parent: Option<String> = None;
-        for (pid, pnode) in template.nodes.iter() {
-            if pnode.choices.iter().any(|c| &c.next_node_id == node_id) {
-                parent = Some(pid.clone());
-                break;
-            }
-        }
-
-        let signature = if let Some(pid) = parent.as_ref().filter(|p| *p == "start" || *p == "n_start") {
-            if let Some(pnode) = template.nodes.get(pid) {
-                if let Some(idx) = pnode
-                    .choices
-                    .iter()
-                    .position(|c| &c.next_node_id == node_id)
-                {
-                    format!("branch_{}", idx + 1)
-                } else {
-                    uuid::Uuid::new_v4().to_string()
-                }
-            } else {
-                uuid::Uuid::new_v4().to_string()
-            }
-        } else {
-            let text = node.content.trim().to_string();
-            let mut cparts: Vec<String> = node
-                .choices
-                .iter()
-                .map(|c| format!("{}→{}", c.text.trim(), c.next_node_id.trim()))
-                .collect();
-            cparts.sort();
-            format!("{}||{}", text, cparts.join("|"))
-        };
+        let text = node.content.trim().to_string();
+        let mut cparts: Vec<String> = node
+            .choices
+            .iter()
+            .map(|c| format!("{}→{}", c.text.trim(), c.next_node_id.trim()))
+            .collect();
+        cparts.sort();
+        let signature = format!("{}||{}", text, cparts.join("|"));
 
         if let Some(owner) = signature_owner.get(&signature) {
             if owner != node_id {
@@ -588,85 +580,172 @@ pub(crate) fn sanitize_template_graph(template: &mut MovieTemplate) {
     }
 }
 
+pub(crate) fn sanitize_affinity_effects(template: &mut MovieTemplate) {
+    if template.nodes.is_empty() {
+        return;
+    }
+
+    let mut id_to_name: HashMap<String, String> = HashMap::new();
+    for c in template.characters.values() {
+        let id = c.id.trim();
+        let name = c.name.trim();
+        if !id.is_empty() && !name.is_empty() {
+            id_to_name.insert(id.to_string(), name.to_string());
+        }
+    }
+
+    let protagonist = pick_protagonist_name(&template.characters);
+
+    for node in template.nodes.values_mut() {
+        let allowed: HashMap<String, ()> = node
+            .characters
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|raw| {
+                let v = raw.trim().to_string();
+                if v.is_empty() {
+                    return None;
+                }
+                let resolved = id_to_name.get(&v).cloned().unwrap_or(v);
+                Some((resolved, ()))
+            })
+            .collect();
+
+        for c in node.choices.iter_mut() {
+            let Some(effect) = c.affinity_effect.as_mut() else {
+                continue;
+            };
+
+            effect.delta = effect.delta.clamp(-20, 20);
+
+            let raw = effect.character_id.trim().to_string();
+            if raw.is_empty() {
+                c.affinity_effect = None;
+                continue;
+            }
+
+            let resolved = id_to_name.get(&raw).cloned().unwrap_or(raw);
+            effect.character_id = resolved.clone();
+
+            if let Some(p) = protagonist.as_ref() {
+                if p == &resolved {
+                    c.affinity_effect = None;
+                    continue;
+                }
+            }
+
+            if !allowed.contains_key(&resolved) {
+                c.affinity_effect = None;
+            }
+        }
+    }
+}
+
+fn pick_protagonist_name(chars: &HashMap<String, types::Character>) -> Option<String> {
+    if chars.is_empty() {
+        return None;
+    }
+
+    let mut best: Option<(i32, String)> = None;
+
+    for (k, c) in chars.iter() {
+        let key = k.to_lowercase();
+        let name = c.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+
+        let mut score: i32 = 0;
+        let role = c.role.to_lowercase();
+        let name_l = name.to_lowercase();
+
+        if key.contains("player") || key.contains("protagonist") || key.contains("main") {
+            score += 5;
+        }
+        if role.contains("protagonist") || role.contains("player") || role.contains("main") {
+            score += 6;
+        }
+        if name == "我" || name.contains("主角") {
+            score += 7;
+        }
+        if name_l.contains("protagonist") || name_l.contains("player") {
+            score += 4;
+        }
+
+        match best.as_ref() {
+            Some((best_score, _)) if *best_score >= score => {}
+            _ => {
+                best = Some((score, name.to_string()));
+            }
+        }
+    }
+
+    best.map(|(_, name)| name)
+}
+
 pub(crate) fn enforce_character_consistency(
     template: &mut MovieTemplate,
     req_characters: Option<Vec<CharacterInput>>,
 ) {
-    if let Some(chars) = req_characters {
-        let mut name_replacements: HashMap<String, String> = HashMap::new();
+    let Some(chars) = req_characters else {
+        return;
+    };
 
-        for input_char in chars {
-            // 1. Try to find exact match by name
-            let mut target_id = template
-                .characters
-                .iter()
-                .find(|(_, c)| c.name == input_char.name)
-                .map(|(k, _)| k.clone());
+    let mut allowed: Vec<String> = Vec::new();
+    let mut out: HashMap<String, types::Character> = HashMap::new();
 
-            // 2. If not found and is_main, try to find placeholder
-            if target_id.is_none() && input_char.is_main {
-                target_id = template
-                    .characters
-                    .iter()
-                    .find(|(k, c)| {
-                        k.as_str() == "c_player" || c.name == "玩家" || c.name == "Player"
-                    })
-                    .map(|(k, _)| k.clone());
-
-                if let Some(ref tid) = target_id {
-                    // We found a placeholder, we are going to overwrite it.
-                    // We should record the name change so we can update nodes.
-                    if let Some(c) = template.characters.get(tid) {
-                        if c.name != input_char.name {
-                            name_replacements.insert(c.name.clone(), input_char.name.clone());
-                        }
-                    }
-                }
-            }
-
-            if let Some(id) = target_id {
-                if let Some(c) = template.characters.get_mut(&id) {
-                    c.name = input_char.name.clone();
-                    c.gender = input_char.gender.clone();
-                    // User said: "must return character info passed by frontend exactly as is"
-                    // So let's strictly set role and background to description.
-                    c.role = input_char.description.clone();
-                    c.background = input_char.description.clone();
-                }
-            } else {
-                let new_id = if input_char.is_main {
-                    "c_player".to_string()
-                } else {
-                    uuid::Uuid::new_v4().to_string()
-                };
-                template.characters.insert(
-                    new_id.clone(),
-                    types::Character {
-                        id: new_id,
-                        name: input_char.name.clone(),
-                        gender: input_char.gender.clone(),
-                        age: 25,
-                        role: input_char.description.clone(),
-                        background: input_char.description.clone(),
-                        avatar_path: None,
-                    },
-                );
-            }
+    for input_char in chars {
+        let name = input_char.name.trim().to_string();
+        if name.is_empty() {
+            continue;
         }
 
-        // Apply name replacements to nodes
-        if !name_replacements.is_empty() {
-            for node in template.nodes.values_mut() {
-                if let Some(ref mut node_chars) = node.characters {
-                    for char_name in node_chars.iter_mut() {
-                        if let Some(new_name) = name_replacements.get(char_name) {
-                            *char_name = new_name.clone();
-                        }
-                    }
-                }
+        allowed.push(name.clone());
+
+        out.insert(
+            name.clone(),
+            types::Character {
+                id: name.clone(),
+                name: name.clone(),
+                gender: input_char.gender,
+                age: 0,
+                role: input_char.description,
+                background: String::new(),
+                avatar_path: None,
+            },
+        );
+    }
+
+    let allowed_set: std::collections::HashSet<String> = allowed.into_iter().collect();
+
+    for node in template.nodes.values_mut() {
+        let Some(list) = node.characters.as_mut() else {
+            continue;
+        };
+
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        list.retain(|raw| {
+            let n = raw.trim().to_string();
+            if n.is_empty() {
+                return false;
             }
+            if !allowed_set.contains(&n) {
+                return false;
+            }
+            if seen.contains(&n) {
+                return false;
+            }
+            seen.insert(n);
+            true
+        });
+
+        if list.is_empty() {
+            node.characters = None;
         }
     }
+
+    template.characters = out;
 }
 
 #[allow(dead_code)]
@@ -711,7 +790,9 @@ pub(crate) fn ensure_minimum_game_graph(
         );
     }
 
-    if template.nodes.is_empty() || (!template.nodes.contains_key("start") && !template.nodes.contains_key("n_start")) {
+    if template.nodes.is_empty()
+        || (!template.nodes.contains_key("start") && !template.nodes.contains_key("n_start"))
+    {
         let protagonist_id = "c_player".to_string();
         template
             .characters
@@ -739,10 +820,12 @@ pub(crate) fn ensure_minimum_game_graph(
                     types::Choice {
                         text: "回去，当面把话说清楚".to_string(),
                         next_node_id: "confront".to_string(), // use pure id
+                        affinity_effect: None,
                     },
                     types::Choice {
                         text: "装作没看见，先离开".to_string(),
                         next_node_id: "escape".to_string(), // use pure id
+                        affinity_effect: None,
                     },
                 ],
             },
@@ -760,10 +843,12 @@ pub(crate) fn ensure_minimum_game_graph(
                     types::Choice {
                         text: "坚持边界".to_string(),
                         next_node_id: "ending_good".to_string(),
+                        affinity_effect: None,
                     },
                     types::Choice {
                         text: "妥协退让".to_string(),
                         next_node_id: "ending_bad".to_string(),
+                        affinity_effect: None,
                     },
                 ],
             },
@@ -781,6 +866,7 @@ pub(crate) fn ensure_minimum_game_graph(
                     types::Choice {
                         text: "回家休息".to_string(),
                         next_node_id: "ending_neutral".to_string(),
+                        affinity_effect: None,
                     },
                 ],
             },

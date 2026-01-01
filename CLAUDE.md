@@ -37,11 +37,16 @@ AI 驱动的互动电影游戏生成器。用户输入主题、世界观和角�
 - 后端：[server/src/types.rs](server/src/types.rs)
 - 核心结构：`MovieTemplate` → 包含 `nodes`（故事节点）、`characters`（角色）、`endings`（结局）
 
+**类型兼容性处理**（Rust 端）:
+- `String | Vec<String>` → 自动合并为单个字符串
+- `Map<String, Character> | Vec<Character>` → 自动转换为 HashMap
+- `Option<String> | Option<Vec<String>>` → 统一处理为 `Option<Vec<String>>`
+
 ## 常用命令
 
 ```bash
 # 前端开发
-cd front && pnpm dev          # 启动开发服务器 (localhost:5173)
+cd front && pnpm dev          # 启动开发服务器 (localhost:18939)
 pnpm run dev:frontend         # 从根目录启动前端
 
 # 后端开发
@@ -60,6 +65,9 @@ pnpm run build                # 构建全部
 cd front && pnpm check        # Biome lint + TypeScript check
 cd front && pnpm test         # 运行 Vitest 测试
 
+# 单个测试文件
+cd front && pnpm test <filename>  # 运行特定测试文件
+
 # 部署
 pnpm run build:frontend:deploy  # 构建并上传到服务器
 pnpm run upload:backend         # 上传后端代码
@@ -74,7 +82,7 @@ pnpm run install:frontend      # 安装前端依赖
 ```env
 MOVIE_GAMES_DATABASE_URL=postgres://USER:PASSWORD@localhost/DB_NAME
 GLM_API_KEY=your-glm-api-key
-PORT=35275
+PORT=35275          # 默认端口
 ```
 
 ### API 调用配置
@@ -82,6 +90,12 @@ PORT=35275
 - `apiKey` - 自定义智谱 API Key
 - `baseUrl` - 自定义 API 端点
 - `model` - 使用的模型（默认 glm-4.6v-flash）
+
+### 端口配置
+- **前端开发服务器**: 18939（Vite 默认）
+- **后端服务器**: 35275（Rust Axum）
+- **API 代理**: 开发环境 Vite 将 `/api` → `http://localhost:35275`（去掉 `/api` 前缀）
+- **生产环境**: Nginx 反向代理 `/api/` → 后端服务器
 
 ## 数据库迁移
 
@@ -147,3 +161,78 @@ front/src/
 - `1024x1024` - 默认
 - `864x1152` - 竖版
 - `1152x864` - 横版
+
+## 核心业务逻辑
+
+### 游戏生成流程
+1. **前端收集参数**: Home.vue 收集用户输入（主题、简介、角色），通过 localStorage 传递到 Generating 页
+2. **后端调用 AI**: `/generate` 接口调用智谱 GLM API，生成完整的互动电影游戏
+3. **数据结构**: 返回 `MovieTemplate`，包含：
+   - `nodes`: 故事节点地图（节点 ID → StoryNode）
+   - `characters`: 角色地图（角色名 → Character）
+   - `endings`: 结局地图（结局 ID → Ending）
+   - `meta`: 元信息（类型、时长、语言等）
+
+### 节点数量控制
+**硬编码限制**（`server/src/prompt.rs`）:
+- `MIN_NODES: 35`
+- `MAX_NODES: 45`
+
+无论用户输入如何，Prompt 都会强制要求 LLM 生成 35-45 个节点。
+
+### 角色数据特殊处理
+- **Character 的 key**: 使用角色名（`name`）而不是 `id` 作为 HashMap 的 key
+- **兼容性**: 支持从旧版数组格式自动转换
+- **字段差异**: `role` 和 `background` 不再相同，保留 AI 生成的原始值
+
+### 图像生成与 Fallback
+- 使用智谱 CogView API 生成背景和角色头像
+- 生成失败时自动使用 SVG data URI 作为备选方案
+- 支持尺寸：`1024x1024`（默认）、`864x1152`（竖版）、`1152x864`（横版）
+
+### 状态持久化策略
+游戏状态通过 `@vueuse/core` 的 `useStorage` 自动持久化到 localStorage：
+- `mg_active_game_data` - MovieTemplate 完整数据
+- `mg_current_node` - 当前节点 ID
+- `mg_player_state` - 玩家状态对象
+- `mg_history_stack` - 历史记录栈（用于"返回上一步"功能）
+- `mg_generate_params` - 生成参数（Generating 页使用后立即清除）
+
+### 分享功能机制
+1. Ending 页点击分享 → 调用 `/share` 接口 → 获取 UUID
+2. 访问链接 `/play/:id` → 调用 `/api/play/:id` → 获取游戏数据
+3. Play 页不跳转，直接在当前页面渲染 Game 组件
+
+## 数据库设计
+
+### 表结构
+- **glm_requests**: GLM API 调用日志（请求/响应/耗时/错误）
+- **games**: 游戏存档（UUID、模板 JSON、发布状态、游玩次数）
+- **shared_games**: 分享的游戏数据（UUID 外键）
+- **play_records**: 游玩记录（IP、User-Agent、时间戳）
+
+### 迁移机制
+- 迁移文件位于 `server/migrations/`
+- 应用启动时通过 `sqlx::migrate!()` 自动执行所有未运行的迁移
+- 无需手动执行迁移命令
+
+## 重要的代码约定
+
+### Rust 后端
+- **类型安全**: 使用 `serde` 进行严格的 JSON 反序列化，支持多种格式兼容（`String | Vec<String>` → String）
+- **错误处理**: 统一返回 `GenerateResponse { code, msg, data }` 格式
+- **CORS**: 开发环境全开放（`AllowOrigin: Any`），生产环境需配置 Nginx
+
+### Vue 前端
+- **路由守卫**: 无需，数据通过 localStorage 传递
+- **错误传递**: 通过 `sessionStorage.mg_last_error` 在页面间传递错误信息
+- **组件通信**: Game 和 Play 组件使用相同的 localStorage 状态逻辑
+
+### 不可用的功能（死代码）
+- **自由模式 (Free Mode)**: 代码存在但 UI 未渲染，用户无法使用
+- **节点数量选择器**: 前端无此控件，硬编码为 35-45
+
+## 强制要求
+- **每次改动之前必须阅读 `REQUIREMENTS.md`** 了解整体需求, 并且明确告诉我已经阅读完毕
+- **每次改动之后必须更新 `REQUIREMENTS.md`**，必须保证 **所有的需求** 都写入此文件，必须使用中文
+- **必须使用 pnpm**，禁止使用 npm/npx

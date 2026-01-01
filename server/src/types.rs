@@ -138,9 +138,18 @@ pub struct StoryNode {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct AffinityEffect {
+    pub character_id: String,
+    pub delta: i32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Choice {
     pub text: String,
     pub next_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affinity_effect: Option<AffinityEffect>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

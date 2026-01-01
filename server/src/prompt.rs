@@ -74,16 +74,7 @@ pub(crate) fn construct_prompt(req: &GenerateRequest) -> String {
   title: string
   backgroundImageBase64?: string
   nodes: Record<string, StoryNode>
-  characters: Record<string, Character>
-}
-interface Character {
-  id: string
-  name: string
-  gender?: string
-  age: number
-  role: string
-  background: string
-  avatarPath?: string
+  endings: Record<string, Ending>
 }
 interface StoryNode {
   content: string
@@ -91,9 +82,14 @@ interface StoryNode {
   characters?: string[]
   choices: Choice[]
 }
+interface AffinityEffect {
+  characterId: string
+  delta: number // -20~20，整数
+}
 interface Choice {
   text: string
   nextNodeId: string // 指向 nodes 的 key 或 endings 的 key
+  affinityEffect?: AffinityEffect // 可选：不需要时不要输出该字段（不要输出 null）
 }
 interface Ending {
   type: 'good' | 'neutral' | 'bad'
@@ -157,11 +153,13 @@ interface Ending {
     - **严禁回退，严禁指向自身**。
 
 ## 2. Level (层级) 控制
+每层的节点指的是 level 值相同的节点
+
 - 起始层级：`start` 节点的 `level` 必须为 **1**。
-- 层级递进：后续节点的 `level` 必须大于当前节点的 level (通常 +1)。
+- 层级递进：后续节点的 `level` 必须是当前节点的 level +1 的节点
 - 层级宽度：每个 level 下最多只能存在 **5 个节点**。
 - 层级分布：
-    - 原则上每个 level 至少 2 个节点。
+    - 每个 level 至少 2 个节点。
     - 允许收束：必须允许 **至少 15%** 的 level 只有 1 个节点 (剧情收束点)。
 - 结局一致性：所有结局 (`endings`) 视为处于同一个最终 Level。
 
@@ -181,9 +179,19 @@ interface Ending {
 - 非空约束：每个节点必须至少包含 **1 个角色** (严禁 0 角色)。
 - 多人互动：绝大多数节点必须包含 **至少 2 个角色**。单人独白节点 < 10%。
 - 角色一致性：
-    - 必须使用列表中的角色，严禁改名、创造新角色。
+    - 必须使用列表中的角色姓名，严禁改名、创造新角色。
     - 主角姓名必须为：**"{}"**。
-    - 必须在 `characters` 字段中正确引用。
+    - 角色只允许出现在 `nodes[*].characters`（字符串数组）中。
+    - 顶层 **禁止输出** `characters` 字段（服务端会直接使用用户提供的角色清单）。
+
+# 五点五、好感度影响 (affinityEffect)
+- 目的：用 `affinityEffect` 表达选项对角色好感度的变化，用于后续表情/结局页展示。
+- 覆盖率硬性约束：**至少 30% 的节点**，必须在其 `choices` 中包含 **至少 1 个** 带 `affinityEffect` 的选项。
+- 字段规范：
+    - `affinityEffect` 结构为 `{{ characterId, delta }}`。
+    - `delta` 必须为整数，范围 **-20 ~ 20**。
+    - `characterId` 必须是该节点 `characters` 中出现的角色姓名，且 **绝对禁止** 为主角（主角姓名见上文约束）。
+- 输出规范：如果某个选项没有好感度变化，**不要输出** `affinityEffect` 字段（不要输出 `null`）。
 
 # 六、结局触发机制
 - 灵活结局：`endings` 的 Key 不再固定，可以根据剧情自由命名 (如 `ending_hero`, `ending_regret` 等)。

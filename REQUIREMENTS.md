@@ -41,7 +41,7 @@
         *   支持的 JSON 格式：`MovieTemplate`（含或不含 `requestId`）、数据库字段 `processed_response`（即不含 `requestId` 的 `MovieTemplate`）、以及后端生成接口返回的 `{ id, template }` 包装结构。
         *   导入后可选择：直接进入游玩(`/game`) 或进入剧情设计器(`/design`)（若触发数据安全锁则禁用“导入并设计”）。
         *   **本地输入回填**: 选择“导入并游玩/导入并设计”后，会把导入 JSON 的 `meta/characters` 回填到本地向导存储（`mg_theme/mg_synopsis/mg_genres/mg_characters`），避免后续页面读取到旧的首页输入。
-        *   支持“导入并保存”：会调用后端 `POST /import` 生成一条数据库记录并返回 `requestId`；保存前会校验首页必填字段（主题必须填写）。
+        *   支持“导入并保存”：会调用后端 `POST /import` 新增一条数据库记录并返回 `requestId`；请求体会同时包含“首页填写信息 + 导入 JSON 全量数据”（合并后提交）。主题允许直接来自导入 JSON（若两者都缺失则报错）。
     *   **帮助 (Help)**: 显示设计理念和操作技巧。
 
 **代码级差异说明**:
@@ -256,8 +256,12 @@
 *   **URL**: `POST /import`
 *   **功能**: 接收前端导入的 `MovieTemplate`，进行节点/结局/图结构与好感度等数据清理后保存到数据库（写入 `glm_requests.processed_response`，并标记 `template_source=import`），返回可编辑的 `requestId`。
 *   **参数**:
-    *   `template` (MovieTemplate): 需要导入的完整剧情模板（必须包含 `nodes` 与 `endings`）。
-    *   `theme` (String, 可选): 首页主题字段（仅用于随请求一并记录，不影响模板处理）。
+    *   `template` (MovieTemplate): 需要导入的完整剧情模板（必须包含 `nodes`；`endings` 可缺省但最终会标准化为对象）。
+    *   `theme` (String, 可选): 首页主题字段（合并进模板：写入 `template.title` 与 `template.meta.logline`，同时随请求记录到 `request_payload`）。
+    *   `synopsis` (String, 可选): 首页剧情简介（合并进模板：写入 `template.meta.synopsis`）。
+    *   `genre` (String[], 可选): 首页剧情类型多选（合并进模板：写入 `template.meta.genre`，以 ` / ` 拼接）。
+    *   `characters` (CharacterInput[], 可选): 首页角色阵容（随请求记录到 `request_payload`，并用于头像兜底处理；若模板缺少角色集合则会用该列表补全）。
+    *   `language` (String, 可选): 前端语言（合并进模板：写入 `template.meta.language`）。
 *   **返回**:
     *   `id` (UUID): 新生成的记录 ID（前端会写入为 `requestId`）。
     *   `template` (MovieTemplate): 清理后的剧情模板。

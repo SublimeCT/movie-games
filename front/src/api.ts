@@ -126,16 +126,24 @@ export async function generateGame(
   throw new Error('Invalid response format');
 }
 
+export interface ImportTemplateRequest {
+  template: MovieTemplate;
+  theme?: string;
+  synopsis?: string;
+  genre?: string[];
+  characters?: CharacterInput[];
+  language?: string;
+}
+
 export async function importGameTemplate(
-  template: MovieTemplate,
-  theme?: string,
+  req: ImportTemplateRequest,
 ): Promise<MovieTemplate> {
   const response = await fetch(`${API_BASE}/import`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ template, theme }),
+    body: JSON.stringify(req),
   });
 
   const data = await parseApiResponse<GenerateResponseData | MovieTemplate>(

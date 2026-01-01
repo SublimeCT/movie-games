@@ -321,13 +321,57 @@ pub(crate) async fn import_template(
 
     let mut template = payload.template;
 
+    if let Some(theme) = payload
+        .theme
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        template.title = theme.to_string();
+        template.meta.logline = theme.to_string();
+    }
+
+    if let Some(synopsis) = payload
+        .synopsis
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        template.meta.synopsis = synopsis.to_string();
+    }
+
+    if let Some(language) = payload
+        .language
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        template.meta.language = language.to_string();
+    }
+
+    if let Some(genre_list) = payload.genre.as_ref() {
+        let cleaned: Vec<String> = genre_list
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        if !cleaned.is_empty() {
+            template.meta.genre = cleaned.join(" / ");
+        }
+    }
+
+    if template.characters.is_empty() {
+        crate::template::enforce_character_consistency(&mut template, payload.characters.clone());
+    }
+
     normalize_character_ids(&mut template);
     normalize_template_endings(&mut template);
     sanitize_template_graph(&mut template);
     normalize_template_nodes(&mut template);
     sanitize_affinity_effects(&mut template);
 
-    ensure_avatar_fallbacks(&mut template, None);
+    ensure_avatar_fallbacks(&mut template, payload.characters.as_ref());
 
     let processed_response = serde_json::to_value(&template).unwrap_or(json!({}));
 

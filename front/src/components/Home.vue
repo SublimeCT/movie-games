@@ -647,18 +647,58 @@ const confirmImportDesign = () => {
 const confirmImportSave = async () => {
   if (isImportSaving.value) return;
 
-  if (!theme.value.trim()) {
-    importError.value = '请先填写游戏主题后再保存';
+  const data = parseImportData();
+  if (!data) return;
+
+  const importedTheme = String(data.meta?.logline || data.title || '').trim();
+  const effectiveTheme = theme.value.trim() || importedTheme;
+  if (!effectiveTheme) {
+    importError.value = '导入的 JSON 缺少主题信息，请先填写游戏主题';
     return;
   }
 
-  const data = parseImportData();
-  if (!data) return;
+  const merged = JSON.parse(JSON.stringify(data)) as MovieTemplate;
+  merged.title = effectiveTheme;
+  merged.meta.logline = effectiveTheme;
+
+  const effectiveSynopsis = synopsis.value.trim();
+  if (effectiveSynopsis) merged.meta.synopsis = effectiveSynopsis;
+
+  const effectiveLanguage = String(navigator.language || '').trim();
+  if (effectiveLanguage) merged.meta.language = effectiveLanguage;
+
+  const effectiveGenreList = (selectedGenres.value || [])
+    .map((g) => String(g || '').trim())
+    .filter(Boolean);
+  if (effectiveGenreList.length > 0) {
+    merged.meta.genre = effectiveGenreList.join(' / ');
+  }
+
+  const effectiveCharacters = (characters.value || [])
+    .map((c) => {
+      const name = String(c.name || '').trim();
+      if (!name) return null;
+      return {
+        name,
+        description: String(c.description || '').trim(),
+        gender: String(c.gender || '其他').trim() || '其他',
+        isMain: Boolean(c.isMain),
+      };
+    })
+    .filter(Boolean) as CharacterInput[];
 
   isImportSaving.value = true;
   importError.value = '';
   try {
-    const saved = await importGameTemplate(data, theme.value);
+    const saved = await importGameTemplate({
+      template: merged,
+      theme: effectiveTheme,
+      synopsis: effectiveSynopsis || undefined,
+      genre: effectiveGenreList.length > 0 ? effectiveGenreList : undefined,
+      characters:
+        effectiveCharacters.length > 0 ? effectiveCharacters : undefined,
+      language: effectiveLanguage || undefined,
+    });
     isImportOpen.value = false;
     loadGameData(saved, 'owner', '/design');
   } catch (e: unknown) {

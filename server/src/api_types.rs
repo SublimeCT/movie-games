@@ -43,6 +43,14 @@ pub(crate) struct ImportTemplateRequest {
     pub(crate) template: MovieTemplate,
     #[serde(default)]
     pub(crate) theme: Option<String>,
+    #[serde(default)]
+    pub(crate) synopsis: Option<String>,
+    #[serde(default)]
+    pub(crate) genre: Option<Vec<String>>,
+    #[serde(default)]
+    pub(crate) characters: Option<Vec<CharacterInput>>,
+    #[serde(default)]
+    pub(crate) language: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Serialize, Clone)]

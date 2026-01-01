@@ -18,10 +18,12 @@ import {
 } from 'lucide-vue-next';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import type { CharacterInput as ApiCharacterInput } from '../api';
 import {
   ApiError,
   getSharedGame,
   getSharedRecordMeta,
+  importGameTemplate,
   shareGame,
   updateGameTemplate,
 } from '../api';
@@ -1710,6 +1712,21 @@ const applyDraftLocal = async () => {
   dirty.value = false;
 };
 
+/**
+ * 将本地角色输入转换为后端接口需要的角色结构（剔除 avatarPath）。
+ */
+const toApiCharacters = (
+  list: Array<{
+    name: string;
+    description: string;
+    gender: string;
+    isMain: boolean;
+    avatarPath?: string;
+  }>,
+): ApiCharacterInput[] => {
+  return list.map(({ avatarPath: _avatarPath, ...rest }) => rest);
+};
+
 type ApplyDraftOptions = {
   /** 是否强制尝试写回数据库（用于“保存并游玩”）。 */
   forceDbSave?: boolean;
@@ -1717,14 +1734,66 @@ type ApplyDraftOptions = {
 
 /**
  * 保存草稿：
- * - 创建者模式且存在 requestId：优先写回数据库，再同步本地；
- * - 导入模式或缺少 requestId：仅保存到本地浏览器。
+ * - 导入模式：点击保存会尝试创建一条新的数据库记录（失败则回退为本地保存）；
+ * - 创建者模式且存在 requestId：优先写回数据库，再同步本地。
  * @param opts 保存策略选项
  */
 const applyDraft = async (opts?: ApplyDraftOptions) => {
   const d = draft.value;
   if (!d) return false;
   if (isSaving.value) return false;
+
+  if (playEntry.value === 'import') {
+    const shouldCreateRecord = canEdit.value;
+
+    if (shouldCreateRecord) {
+      if (securityLocked.value) {
+        await applyDraftLocal();
+        showToast('已保存到本地（数据安全锁已启用）', 'info');
+        return true;
+      }
+
+      isSaving.value = true;
+      try {
+        const saved = await importGameTemplate({
+          template: d,
+          theme: theme.value.trim() || undefined,
+          synopsis: synopsis.value.trim() || undefined,
+          genre:
+            selectedGenres.value && selectedGenres.value.length > 0
+              ? selectedGenres.value
+              : undefined,
+          characters: toApiCharacters(characters.value),
+          language: String(navigator.language || '').trim() || undefined,
+        });
+
+        sessionStorage.setItem('mg_play_entry', 'owner');
+        playEntry.value = 'owner';
+        isOwner.value = true;
+
+        draft.value = cloneJson(saved);
+        await persistActiveGameData(saved);
+        hydrateLocalInputsFromDraft(saved);
+        dirty.value = false;
+
+        await refreshShareMeta();
+
+        showToast('已保存到数据库', 'success');
+        return true;
+      } catch (e: unknown) {
+        console.error(e);
+        await applyDraftLocal();
+        if (e instanceof ApiError) {
+          showToast(e.message || '同步数据库失败', 'error');
+          return false;
+        }
+        showToast('已保存到本地，但同步数据库失败', 'error');
+        return false;
+      } finally {
+        isSaving.value = false;
+      }
+    }
+  }
 
   const requestId = String(d.requestId || '').trim();
   const shouldDbSave =
@@ -2054,8 +2123,8 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
 
           <button
             @click="void applyDraft()"
-            :disabled="!canEdit || !dirty || isSaving"
-            :class="(!canEdit || !dirty || isSaving) ? 'opacity-40 cursor-not-allowed' : ''"
+            :disabled="!canEdit || isSaving || (!dirty && playEntry !== 'import')"
+            :class="(!canEdit || isSaving || (!dirty && playEntry !== 'import')) ? 'opacity-40 cursor-not-allowed' : ''"
             class="group relative inline-flex items-center justify-center px-4 py-3 rounded-2xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md transition-all gap-2 overflow-hidden disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <div class="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>

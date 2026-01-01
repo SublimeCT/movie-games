@@ -477,6 +477,22 @@ export function useGameState() {
     localStorage.removeItem('mg_history_stack');
     localStorage.removeItem('mg_affinity_state');
     endingData.value = null;
+
+    const entry = String(sessionStorage.getItem('mg_play_entry') || '').trim();
+    if (entry === 'shared') {
+      const sharedId =
+        String(sessionStorage.getItem('mg_shared_play_id') || '').trim() ||
+        String(gameData.value?.requestId || '').trim();
+
+      if (sharedId) {
+        router.push(`/play/${encodeURIComponent(sharedId)}`);
+        return;
+      }
+
+      router.push('/');
+      return;
+    }
+
     router.push('/game');
   };
 

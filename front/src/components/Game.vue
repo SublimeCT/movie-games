@@ -169,10 +169,21 @@ const checkEnding = (nodeId: string) => {
 
   const choices = node?.choices || [];
   if (node && choices.length === 0) {
-    // Special handling for 'start' node with no choices:
-    // Instead of triggering ending, find the first node with choices
     if (nodeId === 'start' || nodeId === 'root') {
-      const keys = Object.keys(data.nodes);
+      if (data.nodes['1']?.choices?.length) {
+        currentNodeId.value = '1';
+        return;
+      }
+
+      const keys = Object.keys(data.nodes).sort((a, b) => {
+        const aIsNum = /^\d+$/.test(a);
+        const bIsNum = /^\d+$/.test(b);
+        if (aIsNum && bIsNum) return Number(a) - Number(b);
+        if (aIsNum) return -1;
+        if (bIsNum) return 1;
+        return a.localeCompare(b);
+      });
+
       for (const key of keys) {
         if (data.nodes[key]?.choices?.length) {
           currentNodeId.value = key;
@@ -280,6 +291,10 @@ watch(
       (!next.nodes[currentNodeId.value] && !next.endings?.[currentNodeId.value])
     ) {
       resetToStart();
+    }
+
+    if (currentNodeId.value) {
+      checkEnding(currentNodeId.value);
     }
   },
   { immediate: true },
@@ -567,7 +582,14 @@ const handleChoice = async (choice: Choice) => {
  * @returns {string} The emotion string.
  */
 const getEmotion = (agent: Character) => {
-  const text = (currentNode.value?.content || '').toLowerCase();
+  const rawContent = currentNode.value?.content as unknown;
+  const text =
+    typeof rawContent === 'string'
+      ? rawContent.toLowerCase()
+      : rawContent && typeof rawContent === 'object' && 'text' in rawContent
+        ? String((rawContent as { text?: unknown }).text || '').toLowerCase()
+        : '';
+
   if (text.match(/angry|furious|mad|rage|shout/)) return 'angry';
   if (text.match(/sad|cry|weep|tear|grief|depress/)) return 'sad';
   if (text.match(/happy|smile|laugh|joy|delight/)) return 'happy';

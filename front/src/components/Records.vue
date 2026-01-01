@@ -219,6 +219,7 @@ const deleteRemote = (item: RecordsListItem) => {
  */
 const play = (item: RecordsListItem) => {
   sessionStorage.setItem('mg_play_entry', 'owner');
+  sessionStorage.setItem('mg_owner_play_id', item.requestId);
   router.push(`/play/${item.requestId}`);
 };
 

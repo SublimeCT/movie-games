@@ -270,6 +270,11 @@ pub(crate) fn normalize_template_nodes(template: &mut MovieTemplate) {
     }
 
     if mapping.is_empty() {
+        for (k, node) in template.nodes.iter_mut() {
+            if node.id.is_empty() {
+                node.id = k.clone();
+            }
+        }
         return;
     }
 
@@ -282,7 +287,9 @@ pub(crate) fn normalize_template_nodes(template: &mut MovieTemplate) {
             .cloned()
             .unwrap_or_else(|| old_key.clone());
 
-        node.id = new_key.clone();
+        if node.id.is_empty() || node.id == old_key {
+            node.id = new_key.clone();
+        }
 
         for c in node.choices.iter_mut() {
             if let Some(mapped) = mapping.get(&c.next_node_id) {

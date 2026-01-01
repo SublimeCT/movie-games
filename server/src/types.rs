@@ -96,16 +96,18 @@ pub struct MovieTemplate {
     pub provenance: Provenance,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MetaInfo {
-    #[serde(deserialize_with = "deserialize_string_or_vec")]
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     pub logline: String,
-    #[serde(deserialize_with = "deserialize_string_or_vec")]
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     pub synopsis: String,
+    #[serde(default)]
     pub target_runtime_minutes: u32,
-    #[serde(deserialize_with = "deserialize_string_or_vec_to_string")]
+    #[serde(default, deserialize_with = "deserialize_string_or_vec_to_string")]
     pub genre: String,
+    #[serde(default)]
     pub language: String,
 }
 
@@ -124,6 +126,7 @@ pub struct Character {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct StoryNode {
+    #[serde(default)]
     pub id: String, // Renamed from node_id
     pub content: String,
     #[serde(default)]

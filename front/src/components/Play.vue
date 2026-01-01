@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { useStorage } from '@vueuse/core';
-import { nextTick, onMounted, ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { getSharedGame } from '../api';
 import Game from './Game.vue';
@@ -13,22 +12,6 @@ const error = ref('');
 const isLoading = ref(true);
 const gameLoaded = ref(false);
 
-// Use the same localStorage keys as useGameState for consistency
-const gameDataStorage = useStorage('mg_active_game_data', null, localStorage, {
-  serializer: {
-    read: (v: unknown) => {
-      if (!v || v === 'null' || v === 'undefined' || v === '[object Object]')
-        return null;
-      try {
-        return JSON.parse(String(v));
-      } catch {
-        return null;
-      }
-    },
-    write: (v: unknown) => JSON.stringify(v),
-  },
-});
-
 onMounted(async () => {
   const id = route.params.id as string;
   if (!id) {
@@ -37,7 +20,15 @@ onMounted(async () => {
     return;
   }
 
-  if (!sessionStorage.getItem('mg_play_entry')) {
+  sessionStorage.setItem('mg_shared_play_id', id);
+
+  const rawEntry = String(sessionStorage.getItem('mg_play_entry') || '').trim();
+  const ownerPlayId = String(
+    sessionStorage.getItem('mg_owner_play_id') || '',
+  ).trim();
+
+  if (!(rawEntry === 'owner' && ownerPlayId === id)) {
+    sessionStorage.setItem('mg_owner_play_id', '');
     sessionStorage.setItem('mg_play_entry', 'shared');
   }
 
@@ -53,10 +44,7 @@ onMounted(async () => {
     localStorage.removeItem('mg_history_stack');
     localStorage.removeItem('mg_ending');
 
-    // Set game data directly to localStorage (without navigation)
-    gameDataStorage.value = null;
-    await nextTick();
-    gameDataStorage.value = data;
+    localStorage.setItem('mg_active_game_data', JSON.stringify(data));
 
     gameLoaded.value = true;
     isLoading.value = false;

@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { Handle, Position } from '@vue-flow/core';
-import { computed } from 'vue';
+import { Handle, Position } from '@vue-flow/core'
+import { computed } from 'vue'
 
 const props = defineProps<{
-  id: string;
+  id: string
   data: {
-    label: string;
-    kind: 'story' | 'ending';
-    highlighted?: boolean;
-  };
-}>();
+    label: string
+    kind: 'story' | 'ending'
+    content?: string
+    highlighted?: boolean
+  }
+}>()
 
-const isEnding = computed(() => props.data.kind === 'ending');
-const isHighlighted = computed(() => props.data.highlighted);
+const isEnding = computed(() => props.data.kind === 'ending')
+const isHighlighted = computed(() => props.data.highlighted)
 </script>
 
 <template>
@@ -29,11 +30,11 @@ const isHighlighted = computed(() => props.data.highlighted);
     
     <div class="flex items-center justify-between mb-1 pointer-events-none">
       <span :class="['text-[10px] font-mono uppercase tracking-wider', isEnding ? 'text-cyan-400' : 'text-purple-400']">
-        {{ isEnding ? 'ENDING' : 'NODE' }}
+        {{ isEnding ? 'ENDING' : 'NODE' }} {{ id }}
       </span>
       <div v-if="isHighlighted" class="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shadow-[0_0_5px_rgba(74,222,128,0.8)]"></div>
     </div>
-    <div class="text-xs font-bold text-white/90 truncate font-mono pointer-events-none">{{ data.label }}</div>
+    <div class="text-[10px] md:text-xs text-white/80 leading-snug line-clamp-4 font-mono pointer-events-none break-all" :title="data.content || data.label">{{ data.content || data.label }}</div>
     <div class="absolute inset-0 rounded-xl bg-gradient-to-r from-white/0 via-white/5 to-white/0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"></div>
 
     <Handle type="source" :position="Position.Right" class="!bg-transparent !border-0" />

@@ -18,8 +18,8 @@ use crate::api_types::{
 };
 use crate::db::{
     begin_glm_request_log, create_imported_request, delete_game_by_request_id,
-    finish_glm_request_log, get_request_owner, get_shared_record_id_by_request_id,
-    get_shared_record_meta_by_request_id, list_shared_records_by_ids, record_visit,
+    finish_glm_request_log, get_request_owner,
+    get_shared_record_meta_by_request_id, record_visit,
     save_processed_response, set_request_template_source, set_share_status, upsert_shared_record,
     AppState, DbError,
 };
@@ -479,18 +479,15 @@ pub(crate) async fn share_game(
             .and_then(|h| h.to_str().ok())
             .filter(|s| !s.trim().is_empty());
 
-        let id = upsert_shared_record(&state.db, payload.id, &request_ip, ua)
+        let _id = upsert_shared_record(&state.db, payload.id, &request_ip, ua)
             .await
             .map_err(|e| db_error_response(e).into_response())?;
 
-        Some(id)
+        // Return request_id as the identifier for the client to store
+        Some(payload.id)
     } else {
-        get_shared_record_id_by_request_id(&state.db, payload.id)
-            .await
-            .map_err(|e| {
-                eprintln!("Database error: {}", e);
-                db_error_response(DbError::InternalError).into_response()
-            })?
+        // Just return the request_id
+        Some(payload.id)
     };
 
     set_share_status(&state.db, payload.id, payload.shared)
@@ -501,7 +498,7 @@ pub(crate) async fn share_game(
         })?;
 
     Ok(success_response(json!({
-        "sharedRecordId": shared_record_id
+        "sharedRecordId": shared_record_id // Use the same key to minimize frontend breakage, but value is request_id now
     })))
 }
 
@@ -682,7 +679,6 @@ pub(crate) async fn get_shared_game(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SharedRecordListItem {
-    id: Uuid,
     request_id: Uuid,
     title: String,
     shared_at: String,
@@ -708,14 +704,14 @@ pub(crate) async fn get_shared_record_meta(
             db_error_response(DbError::InternalError).into_response()
         })?;
 
-    let Some((shared_record_id, shared, shared_at, owner_ip)) = meta else {
+    let Some((shared, shared_at, owner_ip)) = meta else {
         return Err(error_response("NOT_FOUND", "Record not found").into_response());
     };
 
     let is_owner = is_owner_ip(&owner_ip, &request_ip);
 
     Ok(success_response(json!({
-        "sharedRecordId": if is_owner { shared_record_id.map(|v| json!(v)).unwrap_or(serde_json::Value::Null) } else { serde_json::Value::Null },
+        // "sharedRecordId": ... REMOVED per security requirement
         "requestId": request_id,
         "shared": shared,
         "sharedAt": shared_at.map(|v| json!(v)).unwrap_or(serde_json::Value::Null),
@@ -741,7 +737,8 @@ pub(crate) async fn list_records(
         return Err(error_response(CODE_BAD_REQUEST, "Too many ids").into_response());
     }
 
-    let rows = list_shared_records_by_ids(&state.db, &payload.ids, &owner_ip)
+    // payload.ids are now treated as request_ids
+    let rows = crate::db::list_shared_records_by_request_ids(&state.db, &payload.ids, &owner_ip)
         .await
         .map_err(|e| {
             eprintln!("Database error: {}", e);
@@ -751,9 +748,8 @@ pub(crate) async fn list_records(
     let mut items = rows
         .into_iter()
         .map(
-            |(id, request_id, shared_at, shared, title, synopsis, genre, language, play_count)| {
+            |(request_id, shared_at, shared, title, synopsis, genre, language, play_count)| {
                 SharedRecordListItem {
-                    id,
                     request_id,
                     title: title.unwrap_or_else(|| "Untitled".to_string()),
                     shared_at,
@@ -1299,34 +1295,8 @@ pub(crate) async fn expand_worldview(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown");
 
-    let language = req.language.as_deref().unwrap_or("zh-CN");
-    let prompt = if let Some(existing) = &req.synopsis {
-        format!(
-            "Role: Professional Screenwriter / Novelist.\n\
-            Task: Expand and refine the following Story Synopsis based on the theme '{}' .\n\
-            Existing Synopsis: '{}'\n\
-            Language: Output strictly in {}.\n\
-            Requirements:
-            1. Length: MUST be between 300 and 600 characters (in the target language).
-            2. Consistency: STRICTLY PRESERVE all existing characters, relationships, and key plot points mentioned in the input.
-            3. Expansion: Add more details to the world setting, atmosphere, and conflict escalation.
-            4. Output: Pure text only, no prefixes/suffixes.
-            5. Tone: Engaging, cinematic, suspenseful.",
-            req.theme, existing, language
-        )
-    } else {
-        format!(
-            "Role: Professional Screenwriter / Novelist.
-            Task: Write a concise Movie Synopsis (电影简介) for an interactive movie game based on the theme '{}' .
-            Language: Output strictly in {}.
-            Requirements:
-            1. Length: MUST be between 300 and 600 characters (in the target language).
-            2. Content: Describe the world setting, main conflict, and atmosphere.
-            3. Output: Pure text only, no prefixes/suffixes.
-            4. Tone: Engaging, cinematic, suspenseful.",
-            req.theme, language
-        )
-    };
+    let _language = req.language.as_deref().unwrap_or("zh-CN");
+    let prompt = construct_expand_worldview_prompt(&req);
 
     let using_override_key = req.api_key.as_ref().is_some_and(|k| !k.trim().is_empty());
     let mut payload_json = serde_json::to_value(&req).unwrap_or(json!({}));

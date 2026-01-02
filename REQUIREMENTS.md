@@ -3,7 +3,7 @@
 > **基于源代码的 100% 准确功能清单**
 > 
 > 本文档严格基于当前代码库 (`front/`, `server/`) 编写，列出所有实际存在的页面、接口及业务逻辑。
-> 最后更新时间: 2026-01-01（更新）
+> 最后更新时间: 2026-01-02（更新）
 
 ## 0. 工程约束
 
@@ -22,7 +22,7 @@
   - **字段长度限制**:
     - **标题/主题 (Title/Theme)**: 最多 **20** 个字符。
     - **其他文本字段**: 严格遵循 Prompt 定义的长度限制；若 Prompt 未明确限制，则默认最多 **100** 个字符。
-    - **剧情简介 (Synopsis)**: 遵循 Prompt 定义的 **300-500** 字范围（前端放宽至 600 以容错）。
+    - **剧情简介 (Synopsis)**: 遵循 Prompt 定义的 **600-800** 字范围（AI 扩写强制要求）。
     - **节点内容**: 遵循 Prompt 定义的 **45-85** 字范围（前端放宽至 200 以容错）。
 - **多端适配 (Mobile/PC Compatibility)**:
   - 所有页面（尤其是 **剧情设计器** 和 **结局页** 的剧情树）必须同时适配 PC 端和移动端。
@@ -30,6 +30,7 @@
     - 移动端必须支持拖拽平移 (`Touch` 事件支持) 和双指缩放/按钮缩放。
     - 节点渲染必须使用原生 HTML 元素以保证交互（如点击弹窗）的可靠性，避免 SVG `foreignObject` 的兼容性问题。
     - 线条与箭头必须在缩放时保持视觉清晰（动态调整 `stroke-width`）。
+    - **默认锁定**: 所有页面（Designer, Ending）的剧情树默认设置为 **锁定状态** (`nodes-draggable="false"`, `nodes-connectable="false"`, `elements-selectable="false"`)，仅保留 `pan-on-drag` 和 `zoom-on-scroll` 以允许查看。
   - **滚动交互**:
     - 所有长页面必须支持原生垂直滚动，禁止在 `body` 上使用 `display: flex; place-items: center` 等导致移动端视口内容截断的布局样式。
     - 避免在根容器使用 `h-full` 或 `overflow-hidden` 限制滚动，应使用 `min-h-screen` 配合自然文档流。
@@ -47,7 +48,7 @@
         *   **去重机制**: 连续 3 次点击内不会出现重复主题 (通过 `recentThemeIndices` 记录最近选择的历史)。
     *   **剧情类型 (Genres)**: 多选标签 (预设：科幻, 剧情, 爱情, 悬疑, 喜剧, 青春, 历史, 冒险, 武侠, 伦理, 悲剧, 职场, 爽文)。支持手动添加自定义类型。
     *   **剧情简介 (Synopsis)**: 多行文本框。
-        *   **AI 智能扩写**: 点击按钮调用 `/expand/worldview` 接口，根据主题自动生成简介。若主题或剧情类型包含敏感词，后端会直接报错拒绝调用 LLM，前端显示错误提示。
+        *   **AI 智能扩写**: 点击按钮调用 `/expand/worldview` 接口，根据主题自动生成简介（强制要求 600-800 字，包含起承转合）。若主题或剧情类型包含敏感词，后端会直接报错拒绝调用 LLM，前端显示错误提示。
         *   **获取提示词**: 点击右侧 ✨ 按钮，调用 `/expand/worldview/prompt` 接口获取并展示对应的 Prompt，不消耗 AI 次数。
     *   **角色阵容 (Characters)**: 角色列表。
         *   每位角色包含: 名字, 性别 (默认为"其他"), 身份/性格描述, 是否主角 (复选框)。
@@ -67,7 +68,8 @@
         *   支持的 JSON 格式：`MovieTemplate`（含或不含 `requestId`）、数据库字段 `processed_response`（即不含 `requestId` 的 `MovieTemplate`）、以及后端生成接口返回的 `{ id, template }` 包装结构。
         *   导入后可选择：直接进入游玩(`/game`) 或进入剧情设计器(`/design`)（若触发数据安全锁则禁用“导入并设计”）。
         *   **本地输入回填**: 选择“导入并游玩/导入并设计”后，会把导入 JSON 的 `meta/characters` 回填到本地向导存储（`mg_theme/mg_synopsis/mg_genres/mg_characters`），避免后续页面读取到旧的首页输入。
-        *   支持“导入并保存”：会调用后端 `POST /import` 新增一条数据库记录并返回 `requestId`；请求体会同时包含“首页填写信息 + 导入 JSON 全量数据”（合并后提交）。主题允许直接来自导入 JSON（若两者都缺失则报错）。
+    *   **自动回填优化**: 当用户从游戏页（如分享链接游玩后）返回首页时，若存在活跃的 `gameData`，首页会自动将该游戏的元数据（主题/简介/类型）回填到输入框，方便用户基于当前游戏进行二次创作或修改。
+    *   支持“导入并保存”：会调用后端 `POST /import` 新增一条数据库记录并返回 `requestId`；请求体会同时包含“首页填写信息 + 导入 JSON 全量数据”（合并后提交）。主题允许直接来自导入 JSON（若两者都缺失则报错）。
     *   **帮助 (Help)**: 显示设计理念和操作技巧。
 
 **代码级差异说明**:
@@ -104,6 +106,7 @@
     *   **剧情模板标准化**: 读取 `mg_active_game_data` 时会对数据做标准化，自动补齐 `meta/characters/provenance` 等必需字段，并在发现旧存档缺字段时写回本地存储，保证游戏/结局/设计器拿到完整 `MovieTemplate`。
     *   **起始节点兼容**: 若 `start/root` 节点没有任何选项且存在节点 `1`，则自动跳转到节点 `1`；否则按“数字 ID 优先 + 数值升序 + 字典序”选择第一个有选项的节点。
     *   **节点内容兼容**: 节点内容同时支持 `string` 与 legacy `{ text }` 格式，用于剧情展示与角色表情推断。
+    *   **卡片内容优化**: 节点内容展示优化，支持多行文本 (`line-clamp-4`)，并在 Hover 时显示完整内容。
     *   **返回上一步**: 点击左上角返回按钮，回退至上一节点 (利用状态栈)。
     *   **返回首页**: 点击时弹窗提示将清空当前游戏进度与剧情；确认后清除游戏状态并返回首页，取消则继续游玩。
 
@@ -115,6 +118,7 @@
 1.  **结局展示**: 显示结局类型 (Happy/Bad/Neutral) 和描述。
 2.  **数据统计**: 显示经历的节点数、解锁结局数、登场角色数。
 3.  **角色好感度**: 显示各角色好感度百分比（排除主角），数据来自 `localStorage.mg_affinity_state`。
+    *   **富文本展示**: 列表项包含角色头像 (`CharacterAvatar`)、姓名、身份/角色描述、以及进度条。
 4.  **剧情分析弹窗**: 展示剧情元信息、分享状态与关键标识；当剧情处于已分享状态时提供“取消分享”入口。
 5.  **剧情树**:
     *   以 SVG `treeGraph` 展示节点/结局关系（可拖拽平移、滚轮缩放、自适应居中）。
@@ -156,8 +160,9 @@
 **组件**: `front/src/components/Records.vue`
 
 **功能**:
-1.  **本地历史记录索引**: 从 `localStorage` (`mg_record_ids`) 读取 `shared_records.id` 列表并去重。
+1.  **本地历史记录索引**: 从 `localStorage` (`mg_record_ids`) 读取 `requestId` 列表（注意：代码已迁移为使用 `requestId` 作为唯一标识，不再暴露 `shared_records.id`）。
 2.  **拉取列表数据**: 调用 `POST /api/records` 批量获取记录的轻量信息 (标题/简介/分享时间/游玩次数等)。
+    *   **数据安全**: 接口及前端均使用 `requestId` 进行查询与交互，`sharedRecordId` 被严格隐藏。
 3.  **一键游玩**: 点击“游玩”跳转到 `/play/:requestId`，并标记入口为创建者视角。
 4.  **进入设计**: 点击“进入设计”跳转到 `/design?id=:requestId`（设计页会再次通过 `/records/meta/:requestId` 校验是否为创建者；若触发数据安全锁则禁用）。
 5.  **复制链接**: 复制 `.../play/:requestId` 到剪贴板。
@@ -172,8 +177,9 @@
 **功能**:
 1.  **编辑首页输入 (本地持久化)**:
     *   主题、角色阵容等字段与首页保持一致，并同步保存到本地。
-    *   **显示一致性修复**: 进入设计器后会从当前剧情模板 (`MovieTemplate.meta/characters`) 回填这些字段到本地存储，避免显示到其他剧本或旧的首页向导输入。
-    *   **设计页只读限制**: “剧情简介”“剧情类型”在设计页显示但禁止修改。
+    *   **显示一致性修复**: 进入设计器后会从当前剧情模板 (`MovieTemplate.meta/characters`) 回填这些字段到本地存储，避免显示到其他剧本或旧的首页向导输入；**数据同步优化**: 针对刚生成的“自建游戏”（无 `requestId`），若草稿中元数据为空，则保留本地输入不覆盖，防止数据丢失。
+    *   **设计页输入同步**: “剧情简介”“剧情类型”支持在设计页修改，且在保存时会同步更新到 `MovieTemplate` 的 `meta` 信息中。
+    *   **设计页只读限制**: (已废弃) “剧情简介”“剧情类型”在设计页现在允许修改。
     *   **角色性别选择**: 角色性别必须通过下拉选择（男 / 女 / 其他），禁止自由输入。
     *   **角色头像上传**: 角色阵容支持上传图片并在前端自动压缩至 300KB 以内，转为 base64 字符串保存。
     *   **背景图片上传**: 支持上传游戏背景图片，并在前端自动压缩至 300KB 以内，转为 base64 字符串保存。
@@ -183,12 +189,12 @@
     *   **保存**: 创建者模式且存在 `requestId` 时，会调用 `POST /template/update` 将草稿写回数据库，同时强制刷新本地 `mg_active_game_data`，确保刷新/再次进入设计不会回到旧数据；
     *   **另存为新记录**: 导入模式(`mg_play_entry=import`)或从结局页进入的非创建者模式下，点击“保存/保存并游玩”会调用 `POST /import` 创建一条新的数据库记录并返回 `requestId`，成功后自动切换为创建者模式（随后保存走 `POST /template/update`），失败则回退为仅本地保存。
     *   **保存并游玩**: 执行与“保存”一致的持久化逻辑后，清理本次游玩状态并跳转 `/game`。
-    *   **分享 (仅创建者可见)**: 当且仅当创建者模式且存在 `requestId` 时，工具栏显示“分享/取消分享”按钮；通过 `GET /records/meta/:requestId` 判断当前是否为创建者 (owner) 以及分享状态，通过 `POST /share` 切换分享状态；分享成功会弹出链接弹窗并将 `sharedRecordId` 写入 `mg_record_ids`（供历史记录页使用）；触发“数据安全锁”时禁用分享。
+    *   **分享 (仅创建者可见)**: 当且仅当创建者模式且存在 `requestId` 时，工具栏显示“分享/取消分享”按钮；通过 `GET /records/meta/:requestId` 判断当前是否为创建者 (owner) 以及分享状态，通过 `POST /share` 切换分享状态；分享成功会弹出链接弹窗并将 `requestId` 写入 `mg_record_ids`（供历史记录页使用）；触发“数据安全锁”时禁用分享。
     *   **导入并覆盖**: 设计页提供“导入”按钮，支持粘贴/上传 JSON 覆盖当前草稿；创建者模式下支持“覆盖并保存”将内容写回数据库，并标记该记录 `template_source=import`。
     *   **导出**: 设计页提供“导出”按钮，弹窗展示完整 JSON，并支持复制 / 下载（交互与结局页一致）。导出 JSON 与数据库 `processed_response` 数据结构一致（顶层为 `MovieTemplate`，不包含 `requestId`），并可直接在首页/设计器导入。
     *   **工具栏按钮可读性**: “新增节点 / 保存 / 分享 / 导出”按钮文本不换行；禁用态具备明显的透明度与鼠标样式反馈。
 3.  **节点树编辑**:
-    *   采用与结局页一致的 SVG `treeGraph` 分层布局展示（可拖拽平移、滚轮缩放、自适应居中）。
+    *   采用与结局页一致的 SVG `treeGraph` 分层布局展示（可拖拽平移、滚轮缩放、自适应居中；默认锁定节点位置）。
     *   **起始节点兼容**: 若存在 `start` 节点但其没有任何选项，且存在节点 `1`，则剧情树以节点 `1` 作为起点；同时将 `start` 视为孤立节点并在“孤立节点”列表中展示原因。
     *   点击节点会在右上角展示节点信息卡片（节点内容摘要 / 选项跳转 / 出场角色），并可一键进入编辑。
     *   支持新增/删除/改名节点，修改节点内容、出场角色、选项及跳转目标（删除节点会弹出站内确认弹窗）。
@@ -326,7 +332,8 @@
     *   `id` (UUID): 生成记录 ID (`glm_requests.id`)
     *   `shared` (Boolean): 是否分享
 *   **返回**:
-    *   `sharedRecordId` (UUID | null): 当 `shared=true` 时返回对应 `shared_records.id`；当 `shared=false` 时返回该请求对应的历史记录 ID（若存在），否则为 null。
+    *   `sharedRecordId` (UUID): **重要变更** - 为保证数据安全，此处返回的 ID 实际上是 `requestId` (`glm_requests.id`)，但字段名保持 `sharedRecordId` 以兼容旧代码结构。
+    *   (原 `shared_records.id` 已被严格隐藏，不再暴露给前端)。
 
 ### 2.7 更新剧情模板 (Update Template)
 *   **URL**: `POST /template/update`
@@ -360,10 +367,9 @@
 
 ### 2.10 批量获取历史记录列表 (List Records)
 *   **URL**: `POST /records`
-*   **功能**: 根据 `shared_records.id` 批量返回列表展示所需的轻量字段。
-*   **参数**: `ids` (UUID[]): `shared_records.id` 列表（上限 200）。
+*   **功能**: 根据 `requestId` (`glm_requests.id`) 批量返回列表展示所需的轻量字段。
+*   **参数**: `ids` (UUID[]): `glm_requests.id` 列表（上限 200）。
 *   **返回**: `SharedRecordListItem[]`
-    *   `id` (UUID): shared_records.id
     *   `requestId` (UUID): glm_requests.id
     *   `title` (String)
     *   `sharedAt` (String)
@@ -372,19 +378,20 @@
     *   `genre` (String)
     *   `language` (String)
     *   `playCount` (Number)
+    *   *(注: `id` 字段已被移除，统一使用 `requestId`)*
 
 ### 2.11 获取分享元信息 (Get Shared Record Meta)
 *   **URL**: `GET /records/meta/:requestId`
 *   **功能**: 查询某个 `glm_requests.id` 对应的分享元信息，用于前端判断是否为创建者以及当前分享状态。
 *   **行为**:
-    *   若该 `requestId` 存在但从未创建过 `shared_records`（即未分享过），仍会返回元信息：`shared=false`，`sharedRecordId=null`，`sharedAt=null`。
+    *   若该 `requestId` 存在但从未创建过 `shared_records`（即未分享过），仍会返回元信息：`shared=false`，`sharedAt=null`。
     *   若该 `requestId` 不存在，则返回 `NOT_FOUND`。
 *   **返回**:
-    *   `sharedRecordId` (UUID | null): 仅当请求方为创建者且存在分享记录时返回真实 ID，否则为 null。
     *   `requestId` (UUID)
     *   `shared` (Boolean)
     *   `sharedAt` (String | null)
     *   `isOwner` (Boolean)
+    *   *(注: `sharedRecordId` 字段已被移除，统一使用 `requestId`)*
 
 ---
 
@@ -453,7 +460,9 @@
 ### 3.5 分享数据安全 (Share Security)
 *   **目标**: 防止非创建者获取 `shared_records.id` 并在历史记录页反向枚举/伪造。
 *   **实现**:
-    *   `GET /records/meta/:requestId` 对非创建者返回 `sharedRecordId = null`。
+    *   **严格隐藏 `shared_records.id`**: 该 ID 仅在数据库内部使用，**绝不**返回给前端或通过 API 暴露。
+    *   **统一标识符**: 前后端交互（包括历史记录列表、分享操作、游玩链接）全量使用 `glm_requests.id` (`requestId`)。
+    *   `GET /records/meta/:requestId` 不再返回 `sharedRecordId`。
     *   `POST /share` 强制校验创建者身份（按 IP 判定），否则返回 FORBIDDEN。
 
 ### 3.6 角色好感度系统 (Affinity)

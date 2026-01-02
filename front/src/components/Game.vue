@@ -227,8 +227,18 @@ const goHome = () => {
   localStorage.removeItem('mg_history_stack');
   localStorage.removeItem('mg_ending');
   localStorage.removeItem('mg_affinity_state');
-  localStorage.removeItem('mg_active_game_data');
-  gameData.value = null;
+  
+  // Only clear active game data if we are NOT in shared mode.
+  // In shared mode, we want to preserve the data so the user can click "Design" in Home.
+  const entry = String(sessionStorage.getItem('mg_play_entry') || '').trim();
+  if (entry === 'shared') {
+    // In shared mode, we MUST preserve mg_active_game_data so Designer can use it.
+    // Do not clear it.
+  } else {
+    localStorage.removeItem('mg_active_game_data');
+    gameData.value = null;
+  }
+  
   navigationError.value = '';
   router.push('/');
 };

@@ -1,8 +1,4 @@
 <script setup lang="ts">
-import { Background } from '@vue-flow/background';
-import { Controls } from '@vue-flow/controls';
-import { VueFlow } from '@vue-flow/core';
-import { MiniMap } from '@vue-flow/minimap';
 import { useStorage } from '@vueuse/core';
 import {
   Copy,
@@ -17,11 +13,8 @@ import {
 } from 'lucide-vue-next';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import CustomNode from './CustomNode.vue';
-import '@vue-flow/core/dist/style.css';
-import '@vue-flow/core/dist/theme-default.css';
-import '@vue-flow/controls/dist/style.css';
-import '@vue-flow/minimap/dist/style.css';
+import CharacterAvatar from './ui/CharacterAvatar.vue';
+import PlotTree from './PlotTree.vue';
 import { getSharedRecordMeta, shareGame } from '../api';
 import { useGameState } from '../hooks/useGameState';
 import type { Character, Ending, StoryNode } from '../types/movie';
@@ -100,6 +93,10 @@ const affinityRows = computed(() => {
       return {
         key: String(c.id || name),
         name,
+        gender: String(c.gender || '其他'),
+        role: String(c.role || ''),
+        age: c.age || 0,
+        avatarPath: c.avatarPath,
         value: v,
         barStyle: getAffinityBarStyle(v),
       };
@@ -107,6 +104,10 @@ const affinityRows = computed(() => {
     .filter(Boolean) as {
     key: string;
     name: string;
+    gender: string;
+    role: string;
+    age: number;
+    avatarPath?: string;
     value: number;
     barStyle: { width: string; backgroundImage: string };
   }[];
@@ -193,7 +194,7 @@ const refreshShareMeta = async () => {
     const meta = await getSharedRecordMeta(requestId);
     isOwner.value = meta.isOwner;
     isShared.value = meta.shared;
-    sharedRecordId.value = meta.sharedRecordId;
+    // sharedRecordId.value = meta.sharedRecordId; // Removed per security requirement
     sharedAt.value = meta.sharedAt;
   } catch (e) {
     console.error(e);
@@ -467,25 +468,6 @@ onUnmounted(() => {
   stopBg?.();
 });
 
-type TreeNodeKind = 'story' | 'ending';
-
-type TreeNodeVM = {
-  id: string;
-  kind: TreeNodeKind;
-  label: string;
-  depth: number;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-};
-
-type EdgeVM = {
-  from: string;
-  to: string;
-  label?: string;
-};
-
 /**
  * 当 start 节点存在但没有任何选项时，将节点 1 视为起始节点。
  */
@@ -507,183 +489,10 @@ const startNodeId = computed(() => {
   if (keys.includes('start')) return 'start';
   if (keys.includes('root')) return 'root';
   if (keys.includes('1')) return '1';
-  return keys[0];
+  return keys[0] || '';
 });
 
-const treeGraph = computed(() => {
-  const nodes: Record<string, StoryNode> = data.value?.nodes ?? {};
-  const endings = data.value?.endings ?? {};
-  const root = startNodeId.value;
-  if (!root || !nodes[root]) {
-    return {
-      nodes: [] as TreeNodeVM[],
-      edges: [] as EdgeVM[],
-      view: { w: 1000, h: 700 },
-    };
-  }
-
-  const knownEndingKeys = new Set(Object.keys(endings));
-  const children = new Map<string, { to: string; label?: string }[]>();
-
-  for (const [id, n] of Object.entries(nodes)) {
-    const list: { to: string; label?: string }[] = [];
-
-    const seenTargets = new Set<string>();
-    for (const c of n.choices || []) {
-      const to = (c.nextNodeId || '').trim();
-      if (!to) continue;
-      if (seenTargets.has(to)) continue;
-      seenTargets.add(to);
-
-      if (nodes[to]) list.push({ to, label: c.text });
-      else if (knownEndingKeys.has(to)) list.push({ to, label: c.text });
-      else if (to === 'END') list.push({ to, label: c.text });
-    }
-    children.set(id, list);
-  }
-
-  const visited = new Set<string>();
-  const parent = new Map<string, string>();
-  const depth = new Map<string, number>();
-  const q: string[] = [root];
-  visited.add(root);
-  depth.set(root, 0);
-
-  const edges: EdgeVM[] = [];
-
-  while (q.length > 0) {
-    const cur = q.shift() as string;
-    const d = depth.get(cur) ?? 0;
-    const next = children.get(cur) ?? [];
-
-    for (const e of next) {
-      edges.push({ from: cur, to: e.to, label: e.label });
-      if (visited.has(e.to)) continue;
-      visited.add(e.to);
-      parent.set(e.to, cur);
-      depth.set(e.to, d + 1);
-      q.push(e.to);
-    }
-  }
-
-  if (fallbackStartToOne.value && nodes.start) {
-    visited.add('start');
-    depth.set('start', 0);
-  }
-
-  const byDepth = new Map<number, string[]>();
-  for (const id of visited) {
-    const d = depth.get(id) ?? 0;
-    if (!byDepth.has(d)) byDepth.set(d, []);
-    byDepth.get(d)?.push(id);
-  }
-
-  const maxDepth = Math.max(...Array.from(byDepth.keys()));
-
-  // 优化排序：确保子节点尽量靠近父节点
-  const layers: string[][] = [];
-  for (let i = 0; i <= maxDepth; i++) layers.push([]);
-
-  const placed = new Set<string>();
-
-  // Layer 0
-  const rootLayer = byDepth.get(0) || [];
-  rootLayer.sort();
-  layers[0] = rootLayer;
-  rootLayer.forEach((id) => {
-    placed.add(id);
-  });
-
-  // Layer 1...N
-  for (let d = 0; d < maxDepth; d++) {
-    const currentLayer = layers[d] ?? [];
-    const nextLayerCandidates: string[] = [];
-
-    // 按父节点顺序添加子节点
-    for (const pid of currentLayer) {
-      const kids = children.get(pid) || [];
-      // 按 label 排序，保证同一父节点的子节点有序
-      kids.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
-
-      for (const k of kids) {
-        if (depth.get(k.to) === d + 1 && !placed.has(k.to)) {
-          nextLayerCandidates.push(k.to);
-          placed.add(k.to);
-        }
-      }
-    }
-
-    // 添加遗漏的节点（孤立节点或父节点在更上层的）
-    const originalNextLayer = byDepth.get(d + 1) || [];
-    originalNextLayer.sort();
-    for (const id of originalNextLayer) {
-      if (!placed.has(id)) {
-        nextLayerCandidates.push(id);
-        placed.add(id);
-      }
-    }
-
-    layers[d + 1] = nextLayerCandidates;
-  }
-
-  const xStep = 260;
-  const yStep = 130;
-  const padX = 50;
-  const padY = 50;
-  const cardW = 200;
-  const cardH = 100;
-
-  // 计算最大行数
-  let maxRow = 0;
-  for (const layer of layers) {
-    if (!layer) continue;
-    maxRow = Math.max(maxRow, layer.length);
-  }
-
-  const totalH = Math.max(1, maxRow) * yStep;
-  const totalW = padX * 2 + (maxDepth + 1) * xStep;
-
-  const pos = new Map<string, { x: number; y: number }>();
-
-  for (let d = 0; d <= maxDepth; d++) {
-    const layer = layers[d] ?? [];
-    const layerH = layer.length * yStep;
-    // 垂直居中每一层
-    const startY = padY + (totalH - layerH) / 2;
-
-    for (let i = 0; i < layer.length; i++) {
-      const id = layer[i];
-      if (!id) continue;
-      pos.set(id, {
-        x: padX + d * xStep,
-        y: startY + i * yStep,
-      });
-    }
-  }
-
-  const nodeVMs: TreeNodeVM[] = [];
-  for (const id of visited) {
-    const p = pos.get(id) ?? { x: padX, y: padY };
-    const isEnding = knownEndingKeys.has(id);
-    nodeVMs.push({
-      id,
-      kind: isEnding ? 'ending' : 'story',
-      label: isEnding ? `END:${id}` : id,
-      depth: depth.get(id) ?? 0,
-      x: p.x,
-      y: p.y,
-      w: cardW,
-      h: cardH,
-    });
-  }
-
-  return {
-    nodes: nodeVMs,
-    edges,
-    view: { w: totalW, h: totalH + padY * 2 },
-    parent,
-  };
-});
+// treeGraph, vueFlowNodes, vueFlowEdges logic removed - handled by PlotTree
 
 const selectedId = ref<string>('');
 
@@ -691,63 +500,60 @@ const endingFocusId = computed(() => {
   return endingDetails.value.nodeId || '';
 });
 
+// Note: Highlighting logic relies on graph structure (parent map).
+// Since PlotTree now computes the graph internally, we can't easily access the parent map here
+// unless PlotTree exposes it or we duplicate the BFS logic.
+// The user required "display method must be strictly consistent".
+// To support highlighting, we can duplicate the parent map computation or just pass the logic.
+// For now, let's keep the highlighting logic here by re-implementing a lightweight BFS to find parents,
+// or we can just pass the ending node ID to PlotTree and let it handle highlighting if we move logic there.
+// But we didn't move highlighting logic to PlotTree fully (just the prop).
+// Re-implementing simplified parent map computation for highlighting:
+
+const parentMap = computed(() => {
+  const nodes = data.value?.nodes ?? {};
+  const root = startNodeId.value;
+  const map = new Map<string, string>();
+  if (!root || !nodes[root]) return map;
+
+  const q = [root];
+  const visited = new Set([root]);
+
+  while(q.length > 0) {
+    const cur = q.shift()!;
+    const n = nodes[cur];
+    if (!n) continue;
+    for (const c of n.choices || []) {
+      const to = c.nextNodeId;
+      if (to && !visited.has(to)) {
+        visited.add(to);
+        map.set(to, cur);
+        q.push(to);
+      }
+    }
+  }
+  return map;
+});
+
 const highlighted = computed(() => {
   const focus = endingFocusId.value;
-  // biome-ignore lint/suspicious/noExplicitAny: D3 graph structure
-  const parent = (treeGraph.value as any).parent as
-    | Map<string, string>
-    | undefined;
-  if (!focus || !parent) return new Set<string>();
+  if (!focus) return new Set<string>();
+  
   const out = new Set<string>();
   let cur: string | undefined = focus;
   let guard = 0;
   while (cur && guard < 2000) {
     out.add(cur);
-    cur = parent.get(cur);
+    cur = parentMap.value.get(cur);
     guard += 1;
   }
   return out;
 });
 
-const vueFlowNodes = computed(() => {
-  return treeGraph.value.nodes.map((n) => ({
-    id: n.id,
-    position: { x: n.x, y: n.y },
-    data: {
-      label: n.label,
-      kind: n.kind,
-      highlighted: highlighted.value.has(n.id),
-    },
-    type: 'custom',
-    style: { width: `${n.w}px`, height: `${n.h}px` },
-  }));
-});
+const plotTreeRef = ref<InstanceType<typeof PlotTree> | null>(null);
 
-const vueFlowEdges = computed(() => {
-  return treeGraph.value.edges.map((e) => {
-    const isHighlighted =
-      highlighted.value.has(e.from) && highlighted.value.has(e.to);
-    return {
-      id: `${e.from}-${e.to}`,
-      source: e.from,
-      target: e.to,
-      animated: isHighlighted,
-      style: isHighlighted
-        ? { stroke: '#d946ef', strokeWidth: 3 }
-        : { stroke: '#9333ea', strokeOpacity: 0.3 },
-      markerEnd: 'arrowclosed',
-    };
-  });
-});
-
-let vueFlowInstance: any = null;
-const onVueFlowInit = (instance: any) => {
-  vueFlowInstance = instance;
-  instance.fitView();
-};
-
-const onVueFlowNodeClick = (event: { node: { id: string } }) => {
-  selectedId.value = event.node.id;
+const onVueFlowNodeClick = (id: string) => {
+  selectedId.value = id;
 };
 
 const onPaneClick = () => {
@@ -756,11 +562,11 @@ const onPaneClick = () => {
 
 const fitTree = async () => {
   await nextTick();
-  vueFlowInstance?.fitView();
+  plotTreeRef.value?.fitView();
 };
 
 const resetView = () => {
-  vueFlowInstance?.fitView();
+  plotTreeRef.value?.fitView();
 };
 
 watch(
@@ -975,11 +781,25 @@ const copyJson = async () => {
                     :key="row.key"
                     class="rounded-xl border border-white/10 bg-white/5 px-4 py-3"
                   >
-                    <div class="flex items-center justify-between gap-3">
-                      <div class="text-sm font-semibold text-white/90 truncate">{{ row.name }}</div>
-                      <div class="text-xs font-mono text-white/70">{{ row.value }}%</div>
+                    <div class="flex items-center gap-3 mb-2">
+                      <CharacterAvatar
+                        :name="row.name"
+                        :gender="row.gender === '女' ? 'female' : row.gender === '男' ? 'male' : 'other'"
+                        :avatarPath="row.avatarPath"
+                        className="w-10 h-10 rounded-full shrink-0"
+                      />
+                      <div class="flex-1 min-w-0">
+                        <div class="flex items-center justify-between gap-2">
+                          <div class="text-sm font-semibold text-white/90 truncate">
+                            {{ row.name }}
+                            <span v-if="row.age" class="ml-1 text-[10px] text-white/50 font-normal">{{ row.age }}岁</span>
+                          </div>
+                          <div class="text-xs font-mono text-white/70">{{ row.value }}%</div>
+                        </div>
+                        <div v-if="row.role" class="text-xs text-white/50 truncate">{{ row.role }}</div>
+                      </div>
                     </div>
-                    <div class="mt-2 h-2 rounded-full bg-white/10 overflow-hidden">
+                    <div class="h-1.5 rounded-full bg-white/10 overflow-hidden">
                       <div class="h-full rounded-full" :style="row.barStyle"></div>
                     </div>
                   </div>
@@ -1001,23 +821,17 @@ const copyJson = async () => {
               <div class="mt-4 rounded-xl border border-white/10 bg-black/55 overflow-hidden h-[640px] md:h-[720px] relative"
                    style="touch-action: none;"
               >
-                <VueFlow
-                  :nodes="vueFlowNodes"
-                  :edges="vueFlowEdges"
-                  :default-viewport="{ zoom: 0.9 }"
+                <PlotTree
+                  ref="plotTreeRef"
+                  :nodes="data?.nodes || {}"
+                  :endings="data?.endings || {}"
+                  :startNodeId="startNodeId"
+                  :highlightedIds="highlighted"
+                  :prevent-scrolling="true"
                   @node-click="onVueFlowNodeClick"
                   @pane-click="onPaneClick"
-                  @init="onVueFlowInit"
-                  fit-view-on-init
                   class="h-full w-full"
-                >
-                  <Background />
-                  <Controls />
-                  <MiniMap />
-                  <template #node-custom="props">
-                    <CustomNode v-bind="props" />
-                  </template>
-                </VueFlow>
+                />
 
                 <div 
                   v-if="selectedNodeInfo" 

@@ -163,7 +163,7 @@ const goHome = () => {
  */
 const removeLocal = (id: string) => {
   recordIds.value = recordIds.value.filter((x) => x !== id);
-  items.value = items.value.filter((x) => x.id !== id);
+  items.value = items.value.filter((x) => x.requestId !== id);
   showToast('已从本地历史记录移除', 'success');
 };
 
@@ -179,18 +179,18 @@ const requestRemoveLocal = (item: RecordsListItem) => {
     cancelText: '取消',
     kind: 'info',
     onConfirm: () => {
-      removeLocal(item.id);
+      removeLocal(item.requestId);
     },
   });
 };
 
 const performDelete = async (item: RecordsListItem) => {
   if (busyItemId.value) return;
-  busyItemId.value = item.id;
+  busyItemId.value = item.requestId;
   try {
     await deleteGameTemplate(item.requestId);
-    recordIds.value = recordIds.value.filter((x) => x !== item.id);
-    items.value = items.value.filter((x) => x.id !== item.id);
+    recordIds.value = recordIds.value.filter((x) => x !== item.requestId);
+    items.value = items.value.filter((x) => x.requestId !== item.requestId);
     showToast('已删除该剧情（服务端）', 'success');
   } catch (e: unknown) {
     console.error(e);
@@ -253,7 +253,7 @@ const copyLink = async (item: RecordsListItem) => {
  * 执行分享状态切换。
  */
 const performToggleShare = async (item: RecordsListItem, next: boolean) => {
-  busyItemId.value = item.id;
+  busyItemId.value = item.requestId;
   try {
     await shareGame(item.requestId, next);
     showToast(next ? '已重新分享' : '已取消分享', 'success');
@@ -402,7 +402,7 @@ watch(
           <TransitionGroup name="records">
             <div
               v-for="item in items"
-              :key="item.id"
+              :key="item.requestId"
               class="group relative overflow-hidden rounded-3xl border border-white/10 bg-black/35 backdrop-blur-xl shadow-2xl"
             >
               <div class="absolute -inset-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-700 bg-gradient-to-r from-purple-600/40 via-fuchsia-600/40 to-cyan-600/40 blur"></div>
@@ -486,7 +486,7 @@ watch(
 
                     <button
                       @click="toggleShare(item)"
-                      :disabled="busyItemId === item.id || securityLocked"
+                      :disabled="busyItemId === item.requestId || securityLocked"
                       class="group/btn relative inline-flex items-center justify-center px-4 py-3 rounded-2xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-[0_0_25px_rgba(34,211,238,0.14)] transition-all gap-2 overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed flex-1"
                     >
                       <div class="absolute inset-0 bg-white/10 translate-y-full group-hover/btn:translate-y-0 transition-transform duration-300"></div>
@@ -497,7 +497,7 @@ watch(
 
                     <button
                       @click="deleteRemote(item)"
-                      :disabled="busyItemId === item.id"
+                      :disabled="busyItemId === item.requestId"
                       class="group/btn relative inline-flex items-center justify-center px-4 py-3 rounded-2xl font-bold text-white/90 border border-red-500/25 bg-red-500/10 hover:bg-red-500/15 backdrop-blur-md transition-all gap-2 overflow-hidden flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <div class="absolute inset-0 bg-white/10 translate-y-full group-hover/btn:translate-y-0 transition-transform duration-300"></div>
@@ -519,10 +519,8 @@ watch(
                 <div class="mt-6 flex items-center justify-between gap-3 text-xs text-white/45">
                   <div class="flex items-center gap-2">
                     <Copy class="w-3.5 h-3.5" />
-                    <span class="font-mono">ID: {{ item.id }}</span>
+                    <span class="font-mono">ID: {{ item.requestId }}</span>
                   </div>
-
-                  <div class="font-mono truncate max-w-[60%]">requestId: {{ item.requestId }}</div>
                 </div>
               </div>
             </div>

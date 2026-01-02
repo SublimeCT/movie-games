@@ -250,7 +250,6 @@ export async function getSharedGame(id: string): Promise<MovieTemplate> {
  * 历史记录列表项（仅包含列表展示所需的轻量字段）。
  */
 export interface RecordsListItem {
-  id: string;
   requestId: string;
   title: string;
   sharedAt: string;
@@ -279,7 +278,6 @@ export async function listRecords(ids: string[]): Promise<RecordsListItem[]> {
  * 获取某个 requestId 的分享元信息，用于判断是否为创建人及分享状态。
  */
 export interface SharedRecordMeta {
-  sharedRecordId: string | null;
   requestId: string;
   shared: boolean;
   sharedAt: string | null;

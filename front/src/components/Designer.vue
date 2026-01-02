@@ -1,8 +1,4 @@
 <script setup lang="ts">
-import { Background } from '@vue-flow/background';
-import { Controls } from '@vue-flow/controls';
-import { VueFlow } from '@vue-flow/core';
-import { MiniMap } from '@vue-flow/minimap';
 import { useStorage } from '@vueuse/core';
 import {
   ArrowLeft,
@@ -34,36 +30,13 @@ import {
 import { useGameState } from '../hooks/useGameState';
 import type { Choice, Ending, MovieTemplate, StoryNode } from '../types/movie';
 import { compressImage } from '../utils/image';
-import CustomNode from './CustomNode.vue';
 import CharacterAvatar from './ui/CharacterAvatar.vue';
 import CinematicLoader from './ui/CinematicLoader.vue';
 import ImagePreview from './ui/ImagePreview.vue';
+import PlotTree from './PlotTree.vue';
 import { WavyBackground } from './ui/wavy-background';
-import '@vue-flow/core/dist/style.css';
-import '@vue-flow/core/dist/theme-default.css';
-import '@vue-flow/controls/dist/style.css';
-import '@vue-flow/minimap/dist/style.css';
 
 type PlayEntry = 'owner' | 'shared' | 'import';
-
-type TreeNodeKind = 'story' | 'ending';
-
-type TreeNodeVM = {
-  id: string;
-  kind: TreeNodeKind;
-  label: string;
-  depth: number;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-};
-
-type EdgeVM = {
-  from: string;
-  to: string;
-  label?: string;
-};
 
 const router = useRouter();
 const route = useRoute();
@@ -117,6 +90,21 @@ const availableGenres = [
 
 /** 自定义类型输入框的临时值 */
 const customGenre = ref('');
+
+const toggleGenre = (g: string) => {
+  if (selectedGenres.value.includes(g)) {
+    selectedGenres.value = selectedGenres.value.filter((item) => item !== g);
+  } else {
+    selectedGenres.value.push(g);
+  }
+};
+
+const addCustomGenre = () => {
+  if (customGenre.value && !selectedGenres.value.includes(customGenre.value)) {
+    selectedGenres.value.push(customGenre.value);
+    customGenre.value = '';
+  }
+};
 
 /**
  * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。
@@ -592,7 +580,7 @@ const refreshShareMeta = async () => {
     const meta = await getSharedRecordMeta(requestId);
     isOwner.value = meta.isOwner;
     isShared.value = meta.shared;
-    sharedRecordId.value = meta.sharedRecordId;
+    // sharedRecordId.value = meta.sharedRecordId; // Removed per security requirement
     sharedAt.value = meta.sharedAt;
   } catch {
     isShared.value = false;
@@ -807,11 +795,52 @@ const parseGenreTags = (genreRaw: string): string[] => {
  * 用当前剧情模板数据覆盖设计页的“首页输入区”展示值，避免读到旧的本地向导数据。
  */
 const hydrateLocalInputsFromDraft = (d: MovieTemplate) => {
-  theme.value = String(d.meta?.logline || d.title || '').trim();
-  synopsis.value = String(d.meta?.synopsis || '').trim();
+  const isFresh = !d.requestId; // 如果没有 requestId，说明是本地草稿/刚生成的数据
 
-  const nextGenres = parseGenreTags(String(d.meta?.genre || '').trim());
-  selectedGenres.value = nextGenres;
+  const metaLogline = String(d.meta?.logline || d.title || '').trim();
+  if (!isFresh) {
+    theme.value = metaLogline;
+  } else {
+    // 本地模式下，优先保留本地已有的输入（可能是用户刚在首页填写的）
+    if (theme.value) {
+      if (d.meta && d.meta.logline !== theme.value) {
+        d.meta.logline = theme.value;
+        d.title = theme.value;
+        // 不标记 dirty，避免刚进入就显示未保存，但这确实是同步操作
+      }
+    } else if (metaLogline) {
+      theme.value = metaLogline;
+    }
+  }
+
+  const metaSynopsis = String(d.meta?.synopsis || '').trim();
+  if (!isFresh) {
+    synopsis.value = metaSynopsis;
+  } else {
+    if (synopsis.value) {
+      if (d.meta && d.meta.synopsis !== synopsis.value) {
+        d.meta.synopsis = synopsis.value;
+      }
+    } else if (metaSynopsis) {
+      synopsis.value = metaSynopsis;
+    }
+  }
+
+  const metaGenre = String(d.meta?.genre || '').trim();
+  if (!isFresh) {
+    const nextGenres = parseGenreTags(metaGenre);
+    selectedGenres.value = nextGenres;
+  } else {
+    if (selectedGenres.value.length > 0) {
+      const localGenreStr = selectedGenres.value.join(' / ');
+      if (d.meta && d.meta.genre !== localGenreStr) {
+        d.meta.genre = localGenreStr;
+      }
+    } else if (metaGenre) {
+      const nextGenres = parseGenreTags(metaGenre);
+      selectedGenres.value = nextGenres;
+    }
+  }
 
   const existingByName = new Map(
     characters.value
@@ -931,182 +960,62 @@ const replaceNextNodeId = (
   }
 };
 
-const treeGraph = computed(() => {
-  const nodes: Record<string, StoryNode> = draft.value?.nodes ?? {};
-  const endings = draft.value?.endings ?? {};
+const reachableStoryNodeIds = computed(() => {
+  const nodes = draft.value?.nodes ?? {};
   const root = startNodeId.value;
-  if (!root || !nodes[root]) {
-    return {
-      nodes: [] as TreeNodeVM[],
-      edges: [] as EdgeVM[],
-      view: { w: 1000, h: 700 },
-      parent: new Map<string, string>(),
-    };
-  }
+  const visited = new Set<string>();
+  if (!root || !nodes[root]) return visited;
 
-  const knownEndingKeys = new Set(Object.keys(endings));
-  const children = new Map<string, { to: string; label?: string }[]>();
-
-  for (const [id, n] of Object.entries(nodes)) {
-    const list: { to: string; label?: string }[] = [];
-
-    const seenTargets = new Set<string>();
+  const q = [root];
+  visited.add(root);
+  while (q.length > 0) {
+    const cur = q.shift()!;
+    const n = nodes[cur];
+    if (!n) continue;
     for (const c of n.choices || []) {
       const to = (c.nextNodeId || '').trim();
-      if (!to) continue;
-      // if (to === 'END') continue; // Allow END nodes to be visualized
-      if (seenTargets.has(to)) continue;
-      seenTargets.add(to);
-
-      if (nodes[to]) list.push({ to, label: c.text });
-      else if (knownEndingKeys.has(to)) list.push({ to, label: c.text });
-      else if (to === 'END') list.push({ to, label: c.text });
-    }
-    children.set(id, list);
-  }
-
-  const visited = new Set<string>();
-  const parent = new Map<string, string>();
-  const depth = new Map<string, number>();
-  const q: string[] = [root];
-  visited.add(root);
-  depth.set(root, 0);
-
-  const edges: EdgeVM[] = [];
-
-  while (q.length > 0) {
-    const cur = q.shift() as string;
-    const d = depth.get(cur) ?? 0;
-    const next = children.get(cur) ?? [];
-
-    for (const e of next) {
-      edges.push({ from: cur, to: e.to, label: e.label });
-      if (visited.has(e.to)) continue;
-      visited.add(e.to);
-      parent.set(e.to, cur);
-      depth.set(e.to, d + 1);
-      q.push(e.to);
-    }
-  }
-
-  if (fallbackStartToOne.value && nodes.start) {
-    visited.add('start');
-    depth.set('start', 0);
-  }
-
-  const byDepth = new Map<number, string[]>();
-  for (const id of visited) {
-    const d = depth.get(id) ?? 0;
-    if (!byDepth.has(d)) byDepth.set(d, []);
-    byDepth.get(d)?.push(id);
-  }
-
-  const maxDepth = Math.max(...Array.from(byDepth.keys()));
-
-  const layers: string[][] = [];
-  for (let i = 0; i <= maxDepth; i++) layers.push([]);
-
-  const placed = new Set<string>();
-
-  const rootLayer = byDepth.get(0) || [];
-  rootLayer.sort();
-  layers[0] = rootLayer;
-  rootLayer.forEach((id) => {
-    placed.add(id);
-  });
-
-  for (let d = 0; d < maxDepth; d++) {
-    const currentLayer = layers[d] ?? [];
-    const nextLayerCandidates: string[] = [];
-
-    for (const pid of currentLayer) {
-      const kids = children.get(pid) || [];
-      kids.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
-
-      for (const k of kids) {
-        if (depth.get(k.to) === d + 1 && !placed.has(k.to)) {
-          nextLayerCandidates.push(k.to);
-          placed.add(k.to);
+      if (to && !visited.has(to)) {
+        visited.add(to);
+        if (nodes[to]) {
+           q.push(to);
         }
       }
     }
-
-    const originalNextLayer = byDepth.get(d + 1) || [];
-    originalNextLayer.sort();
-    for (const id of originalNextLayer) {
-      if (!placed.has(id)) {
-        nextLayerCandidates.push(id);
-        placed.add(id);
-      }
-    }
-
-    layers[d + 1] = nextLayerCandidates;
   }
-
-  const xStep = 260;
-  const yStep = 130;
-  const padX = 50;
-  const padY = 50;
-  const cardW = 200;
-  const cardH = 100;
-
-  let maxRow = 0;
-  for (const layer of layers) {
-    if (!layer) continue;
-    maxRow = Math.max(maxRow, layer.length);
-  }
-
-  const totalH = Math.max(1, maxRow) * yStep;
-  const totalW = padX * 2 + (maxDepth + 1) * xStep;
-
-  const pos = new Map<string, { x: number; y: number }>();
-
-  for (let d = 0; d <= maxDepth; d++) {
-    const layer = layers[d] ?? [];
-    const layerH = layer.length * yStep;
-    const startY = padY + (totalH - layerH) / 2;
-
-    for (let i = 0; i < layer.length; i++) {
-      const id = layer[i];
-      if (!id) continue;
-      pos.set(id, {
-        x: padX + d * xStep,
-        y: startY + i * yStep,
-      });
-    }
-  }
-
-  const nodeVMs: TreeNodeVM[] = [];
+  
+  // Only keep IDs that exist in nodes (story nodes)
+  const storyIds = new Set<string>();
   for (const id of visited) {
-    const p = pos.get(id) ?? { x: padX, y: padY };
-    const isEnding = knownEndingKeys.has(id);
-    nodeVMs.push({
-      id,
-      kind: isEnding ? 'ending' : 'story',
-      label: isEnding ? `END:${id}` : id,
-      depth: depth.get(id) ?? 0,
-      x: p.x,
-      y: p.y,
-      w: cardW,
-      h: cardH,
-    });
+    if (nodes[id]) storyIds.add(id);
   }
-
-  return {
-    nodes: nodeVMs,
-    edges,
-    view: { w: totalW, h: totalH + padY * 2 },
-    parent,
-  };
+  return storyIds;
 });
 
-const reachableStoryNodeIds = computed(() => {
-  const out = new Set<string>();
-  for (const n of treeGraph.value.nodes) {
-    if (n.kind !== 'story') continue;
-    out.add(n.id);
+const parentMap = computed(() => {
+  const nodes = draft.value?.nodes ?? {};
+  const root = startNodeId.value;
+  const map = new Map<string, string>();
+  if (!root || !nodes[root]) return map;
+
+  const q = [root];
+  const visited = new Set([root]);
+
+  while(q.length > 0) {
+    const cur = q.shift()!;
+    const n = nodes[cur];
+    if (!n) continue;
+    for (const c of n.choices || []) {
+      const to = (c.nextNodeId || '').trim();
+      if (to && !visited.has(to)) {
+        visited.add(to);
+        map.set(to, cur);
+        if (nodes[to]) {
+            q.push(to);
+        }
+      }
+    }
   }
-  return out;
+  return map;
 });
 
 const orphanNodeIds = computed(() => {
@@ -1181,8 +1090,8 @@ const orphanNodeReasonMap = computed(() => {
 const selectedId = ref<string>('');
 const highlighted = computed(() => {
   const focus = selectedId.value;
-  const parent = treeGraph.value.parent;
-  if (!focus || !parent) return new Set<string>();
+  const parent = parentMap.value;
+  if (!focus) return new Set<string>();
   const out = new Set<string>();
   let cur: string | undefined = focus;
   let guard = 0;
@@ -1194,45 +1103,16 @@ const highlighted = computed(() => {
   return out;
 });
 
-const vueFlowNodes = computed(() => {
-  return treeGraph.value.nodes.map((n) => ({
-    id: n.id,
-    position: { x: n.x, y: n.y },
-    data: {
-      label: n.label,
-      kind: n.kind,
-      highlighted: highlighted.value.has(n.id),
-    },
-    type: 'custom',
-    style: { width: `${n.w}px`, height: `${n.h}px` },
-  }));
-});
-
-const vueFlowEdges = computed(() => {
-  return treeGraph.value.edges.map((e) => {
-    const isHighlighted =
-      highlighted.value.has(e.from) && highlighted.value.has(e.to);
-    return {
-      id: `${e.from}-${e.to}`,
-      source: e.from,
-      target: e.to,
-      animated: isHighlighted,
-      style: isHighlighted
-        ? { stroke: '#d946ef', strokeWidth: 3 }
-        : { stroke: '#9333ea', strokeOpacity: 0.3 },
-      markerEnd: 'arrowclosed',
-    };
-  });
-});
+// Removed treeGraph, vueFlowNodes, vueFlowEdges as they are now handled by PlotTree component
 
 let vueFlowInstance: any = null;
-const onVueFlowInit = (instance: any) => {
-  vueFlowInstance = instance;
-  instance.fitView();
-};
+// const onVueFlowInit = (instance: any) => {
+//   vueFlowInstance = instance;
+//   instance.fitView();
+// };
 
-const onVueFlowNodeClick = (event: { node: { id: string } }) => {
-  onNodeClick(event.node.id);
+const onVueFlowNodeClick = (id: string) => {
+  onNodeClick(id);
 };
 
 const onPaneClick = () => {
@@ -1371,8 +1251,14 @@ const goHome = () => {
 const goPlay = async () => {
   if (!draft.value) return;
   if (!canEdit.value) return;
-  await applyDraft({ forceDbSave: true });
+  // Ensure we save current draft state to DB (if online) or Local (if offline/import)
+  const saved = await applyDraft({ forceDbSave: true });
+  if (!saved) return;
+  
   clearRunState();
+  // Ensure gameData is refreshed before navigation
+  await nextTick();
+  gameData.value = cloneJson(draft.value); 
   await nextTick();
   router.push('/game');
 };
@@ -1681,9 +1567,8 @@ const renameEndingIfNeeded = (oldKey: string, newKeyRaw: string) => {
  */
 const persistActiveGameData = async (template: MovieTemplate) => {
   const persisted = cloneJson(template);
-  localStorage.setItem('mg_active_game_data', JSON.stringify(persisted));
-  gameData.value = null;
-  await nextTick();
+  // 直接更新 gameData.value，useStorage 会自动处理序列化和 localStorage 写入
+  // 避免手动 setItem 和设置为 null 导致的潜在竞争或数据清空
   gameData.value = persisted;
   await nextTick();
 };
@@ -1729,55 +1614,58 @@ const applyDraft = async (opts?: ApplyDraftOptions) => {
   if (!d) return false;
   if (isSaving.value) return false;
 
-  if (playEntry.value === 'import') {
-    const shouldCreateRecord = canEdit.value;
+  if ((playEntry.value === 'import' || (playEntry.value === 'owner' && !d.requestId)) && canEdit.value) {
+    if (securityLocked.value) {
+      if (d.meta) {
+    d.meta.synopsis = synopsis.value.trim();
+    d.meta.genre = (selectedGenres.value || []).join(' / ');
+    d.meta.logline = theme.value.trim();
+  }
+  d.title = theme.value.trim();
 
-    if (shouldCreateRecord) {
-      if (securityLocked.value) {
-        await applyDraftLocal();
-        showToast('已保存到本地（数据安全锁已启用）', 'info');
-        return true;
-      }
+  await applyDraftLocal();
+      showToast('已保存到本地（数据安全锁已启用）', 'info');
+      return true;
+    }
 
-      isSaving.value = true;
-      try {
-        const saved = await importGameTemplate({
-          template: d,
-          theme: theme.value.trim() || undefined,
-          synopsis: synopsis.value.trim() || undefined,
-          genre:
-            selectedGenres.value && selectedGenres.value.length > 0
-              ? selectedGenres.value
-              : undefined,
-          characters: toApiCharacters(characters.value),
-          language: String(navigator.language || '').trim() || undefined,
-        });
+    isSaving.value = true;
+    try {
+      const saved = await importGameTemplate({
+        template: d,
+        theme: theme.value.trim() || undefined,
+        synopsis: synopsis.value.trim() || undefined,
+        genre:
+          selectedGenres.value && selectedGenres.value.length > 0
+            ? selectedGenres.value
+            : undefined,
+        characters: toApiCharacters(characters.value),
+        language: String(navigator.language || '').trim() || undefined,
+      });
 
-        sessionStorage.setItem('mg_play_entry', 'owner');
-        playEntry.value = 'owner';
-        isOwner.value = true;
+      sessionStorage.setItem('mg_play_entry', 'owner');
+      playEntry.value = 'owner';
+      isOwner.value = true;
 
-        draft.value = cloneJson(saved);
-        await persistActiveGameData(saved);
-        hydrateLocalInputsFromDraft(saved);
-        dirty.value = false;
+      draft.value = cloneJson(saved);
+      await persistActiveGameData(saved);
+      hydrateLocalInputsFromDraft(saved);
+      dirty.value = false;
 
-        await refreshShareMeta();
+      await refreshShareMeta();
 
-        showToast('已保存到数据库', 'success');
-        return true;
-      } catch (e: unknown) {
-        console.error(e);
-        await applyDraftLocal();
-        if (e instanceof ApiError) {
-          showToast(e.message || '同步数据库失败', 'error');
-          return false;
-        }
-        showToast('已保存到本地，但同步数据库失败', 'error');
+      showToast('已保存到数据库', 'success');
+      return true;
+    } catch (e: unknown) {
+      console.error(e);
+      await applyDraftLocal();
+      if (e instanceof ApiError) {
+        showToast(e.message || '同步数据库失败', 'error');
         return false;
-      } finally {
-        isSaving.value = false;
       }
+      showToast('已保存到本地，但同步数据库失败', 'error');
+      return false;
+    } finally {
+      isSaving.value = false;
     }
   }
 
@@ -1791,6 +1679,14 @@ const applyDraft = async (opts?: ApplyDraftOptions) => {
       pendingTemplateSource.value !== null);
 
   if (shouldDbSave) {
+    // Sync local inputs to draft before saving to database
+    if (d.meta) {
+      d.meta.synopsis = synopsis.value.trim();
+      d.meta.genre = (selectedGenres.value || []).join(' / ');
+      d.meta.logline = theme.value.trim();
+    }
+    d.title = theme.value.trim();
+
     isSaving.value = true;
     try {
       const saved = await updateGameTemplate(
@@ -1799,9 +1695,14 @@ const applyDraft = async (opts?: ApplyDraftOptions) => {
         pendingTemplateSource.value || undefined,
       );
       pendingTemplateSource.value = null;
-      draft.value = cloneJson(saved);
-      await persistActiveGameData(saved);
-      hydrateLocalInputsFromDraft(saved);
+      // draft.value = cloneJson(saved);
+      // await persistActiveGameData(saved);
+      // hydrateLocalInputsFromDraft(saved);
+      
+      // Trust local draft for immediate consistency
+      await persistActiveGameData(d);
+      if (saved.version) d.version = saved.version;
+      
       dirty.value = false;
       showToast('已保存到数据库', 'success');
       return true;
@@ -1918,7 +1819,11 @@ watch(
     }
 
     if (playEntry.value === 'shared') {
-      accessError.value = '分享访问模式下不允许设计与编辑。';
+      // 自动转换为导入模式，允许用户在本地编辑副本
+      sessionStorage.setItem('mg_play_entry', 'import');
+      playEntry.value = 'import';
+      isOwner.value = false;
+      accessError.value = '';
       return;
     }
 
@@ -1937,8 +1842,10 @@ onMounted(async () => {
   }
 
   if (playEntry.value === 'shared') {
-    accessError.value = '分享访问模式下不允许设计与编辑。';
-    return;
+    // 自动转换为导入模式，允许用户在本地编辑副本
+    sessionStorage.setItem('mg_play_entry', 'import');
+    playEntry.value = 'import';
+    isOwner.value = false;
   }
 
   const queryId = String(route.query.id || '').trim();
@@ -2283,13 +2190,12 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                 <div class="space-y-2">
                   <div class="flex items-center justify-between gap-3">
                     <div class="text-sm font-bold text-white/80">剧情简介</div>
-                    <div class="text-xs text-white/45">设计页禁止修改</div>
+                    <!-- <div class="text-xs text-white/45">设计页禁止修改</div> -->
                   </div>
                   <textarea
                     v-model="synopsis"
                     rows="6"
-                    readonly
-                    class="w-full px-4 py-3 rounded-2xl border border-white/10 bg-black/35 backdrop-blur-md text-white/90 placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-purple-500/40 opacity-70 cursor-not-allowed"
+                    class="w-full px-4 py-3 rounded-2xl border border-white/10 bg-black/35 backdrop-blur-md text-white/90 placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-purple-500/40"
                     placeholder="描述故事的核心冲突、世界背景和开场氛围..."
                   ></textarea>
                 </div>
@@ -2297,34 +2203,34 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                 <div class="space-y-3">
                   <div class="flex items-center justify-between gap-3">
                     <div class="text-sm font-bold text-white/80">剧情类型 (多选)</div>
-                    <div class="text-xs text-white/45">设计页禁止修改</div>
+                    <!-- <div class="text-xs text-white/45">设计页禁止修改</div> -->
                   </div>
                   <div class="flex flex-wrap gap-2">
                     <button
                       v-for="g in availableGenres"
                       :key="g"
                       type="button"
-                      disabled
+                      @click="toggleGenre(g)"
                       :class="[
-                        'px-3 py-2 rounded-xl border text-sm transition whitespace-nowrap opacity-70 cursor-not-allowed',
+                        'px-3 py-2 rounded-xl border text-sm transition whitespace-nowrap',
                         selectedGenres.includes(g)
                           ? 'bg-purple-600/70 border-purple-500/70 text-white'
-                          : 'bg-black/25 border-white/10 text-white/70',
+                          : 'bg-black/25 border-white/10 text-white/70 hover:bg-white/5',
                       ]"
                     >
                       {{ g }}
                     </button>
-                    <div class="flex items-center gap-2 opacity-70">
+                    <div class="flex items-center gap-2">
                       <input
                         v-model="customGenre"
-                        disabled
                         placeholder="添加..."
-                        class="px-3 py-2 rounded-xl text-sm bg-black/25 border border-white/10 text-white/90 focus:outline-none w-20"
+                        class="px-3 py-2 rounded-xl text-sm bg-black/25 border border-white/10 text-white/90 focus:outline-none w-20 focus:w-32 transition-all"
+                        @keyup.enter="addCustomGenre"
                       />
                       <button
                         type="button"
-                        disabled
-                        class="px-2 py-2 rounded-xl border border-white/10 bg-black/25 text-white/70 text-sm cursor-not-allowed"
+                        @click="addCustomGenre"
+                        class="px-2 py-2 rounded-xl border border-white/10 bg-black/25 text-white/70 text-sm hover:bg-white/5"
                       >
                         +
                       </button>
@@ -2514,22 +2420,15 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                     class="mt-4 rounded-xl border border-white/10 bg-black/55 overflow-hidden h-[640px] md:h-[720px] relative"
                     style="touch-action: none;"
                   >
-                    <VueFlow
-                      :nodes="vueFlowNodes"
-                      :edges="vueFlowEdges"
-                      :default-viewport="{ zoom: 0.9 }"
+                    <PlotTree
+                      :nodes="draft?.nodes || {}"
+                      :endings="draft?.endings || {}"
+                      :startNodeId="startNodeId"
+                      :prevent-scrolling="true"
+                      :highlightedIds="highlighted"
                       @node-click="onVueFlowNodeClick"
                       @pane-click="onPaneClick"
-                      @init="onVueFlowInit"
-                      fit-view-on-init
-                    >
-                      <Background />
-                      <Controls />
-                      <MiniMap />
-                      <template #node-custom="props">
-                        <CustomNode v-bind="props" />
-                      </template>
-                    </VueFlow>
+                    />
 
                     <div
                       v-if="selectedNodeInfo"

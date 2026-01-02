@@ -48,6 +48,39 @@ const theme = useStorage('mg_theme', '');
 const synopsis = useStorage('mg_synopsis', ''); // Renamed from worldview
 /** Selected genres for the movie */
 const selectedGenres = useStorage<string[]>('mg_genres', []); // Added genres
+
+onMounted(() => {
+  // 如果当前有活跃的游戏数据（例如从分享链接进入后点击了Home），尝试回填到输入框
+  if (gameData.value) {
+    const d = gameData.value;
+    
+    // 回填 Theme/Logline
+    const metaLogline = String(d.meta?.logline || d.title || '').trim();
+    if (metaLogline && !theme.value) {
+      theme.value = metaLogline;
+    } else if (metaLogline && theme.value && theme.value !== metaLogline) {
+      // 策略：如果本地已有且不一致，可以覆盖或者保留。
+      // 这里为了让用户能编辑刚才看到的游戏，我们覆盖（假设用户想基于当前游戏修改）
+      // 但为了不丢失用户手写的，仅当 gameData.value 看起来比较新的时候覆盖
+      // 简单起见，如果从 Play 跳转过来，我们认为用户意图是 Modify
+      theme.value = metaLogline;
+    }
+
+    // 回填 Synopsis
+    const metaSynopsis = String(d.meta?.synopsis || '').trim();
+    if (metaSynopsis) {
+      synopsis.value = metaSynopsis;
+    }
+
+    // 回填 Genre
+    const metaGenre = String(d.meta?.genre || '').trim();
+    if (metaGenre) {
+      const parts = metaGenre.split(/\s*(?:\/|\||,|，|、|;|；)\s*/g).map(x => x.trim()).filter(Boolean);
+      const set = new Set(parts);
+      selectedGenres.value = Array.from(set);
+    }
+  }
+});
 /** List of characters involved in the story */
 const characters = useStorage<LocalCharacterInput[]>('mg_characters', [
   { name: '主角', description: '故事的核心人物', gender: '男', isMain: true },
@@ -507,6 +540,42 @@ const handleDesign = () => {
     return;
   }
 
+  // 检查是否是从分享链接进入的，如果是，则尝试继承分享的数据
+  const currentEntry = String(sessionStorage.getItem('mg_play_entry') || '').trim();
+  if (currentEntry === 'shared' && gameData.value && Object.keys(gameData.value.nodes || {}).length > 0) {
+    // 继承分享数据
+    const newTemplate = JSON.parse(JSON.stringify(gameData.value)) as MovieTemplate;
+    
+    // 更新元数据以匹配当前输入（如果用户在首页修改了输入）
+    newTemplate.title = theme.value;
+    newTemplate.meta = {
+      ...newTemplate.meta,
+      logline: theme.value,
+      synopsis: synopsis.value,
+      genre: selectedGenres.value.join(' / '),
+    };
+    
+    // 重置项目 ID 和请求 ID，使其成为新项目
+    newTemplate.projectId = crypto.randomUUID();
+    newTemplate.requestId = undefined; // 清空 requestId 以便创建新记录
+    newTemplate.provenance = {
+      createdBy: 'import_shared',
+      createdAt: new Date().toISOString(),
+    };
+    newTemplate.owner = 'User';
+
+    // 更新角色信息（保留原有 ID，更新描述等）
+    // 注意：这里我们优先保留模板中的角色结构，但更新其内容为当前输入
+    // 如果用户删除了角色，这里可能需要处理，简单起见我们信任模板结构，但尝试合并输入
+    // 为防止角色丢失，我们不做深度合并，仅当模板中角色名匹配时更新
+    
+    gameData.value = newTemplate;
+    // 设置为 import 模式或者 owner 模式，这里设置为 owner 表示这是用户的新草稿
+    sessionStorage.setItem('mg_play_entry', 'owner');
+    router.push('/design');
+    return;
+  }
+
   const newTemplate: MovieTemplate = {
     projectId: crypto.randomUUID(),
     title: theme.value,
@@ -547,6 +616,7 @@ const handleDesign = () => {
   });
 
   gameData.value = newTemplate;
+  sessionStorage.setItem('mg_play_entry', 'owner');
   router.push('/design');
 };
 

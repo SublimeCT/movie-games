@@ -321,7 +321,7 @@ pub(crate) async fn upsert_shared_record(
     .await
     .map_err(|_| DbError::InternalError)?;
 
-    if daily_ip >= 3 {
+    if daily_ip >= 100 {
         return Err(DbError::ServiceBusy);
     }
 
@@ -342,24 +342,12 @@ pub(crate) async fn upsert_shared_record(
     Ok(row.0)
 }
 
-pub(crate) async fn get_shared_record_id_by_request_id(
-    db: &PgPool,
-    request_id: Uuid,
-) -> Result<Option<Uuid>, sqlx::Error> {
-    let row: Option<(Uuid,)> =
-        sqlx::query_as("select id from shared_records where request_id = $1")
-            .bind(request_id)
-            .fetch_optional(db)
-            .await?;
-    Ok(row.map(|r| r.0))
-}
-
 pub(crate) async fn get_shared_record_meta_by_request_id(
     db: &PgPool,
     request_id: Uuid,
-) -> Result<Option<(Option<Uuid>, bool, Option<String>, String)>, sqlx::Error> {
-    let row: Option<(Option<Uuid>, bool, Option<String>, String)> = sqlx::query_as(
-        "select sr.id, gr.shared, sr.shared_at::text, gr.client_ip \
+) -> Result<Option<(bool, Option<String>, String)>, sqlx::Error> {
+    let row: Option<(bool, Option<String>, String)> = sqlx::query_as(
+        "select gr.shared, sr.shared_at::text, gr.client_ip \
          from glm_requests gr \
          left join shared_records sr on sr.request_id = gr.id \
          where gr.id = $1",
@@ -370,13 +358,12 @@ pub(crate) async fn get_shared_record_meta_by_request_id(
     Ok(row)
 }
 
-pub(crate) async fn list_shared_records_by_ids(
+pub(crate) async fn list_shared_records_by_request_ids(
     db: &PgPool,
-    ids: &[Uuid],
+    request_ids: &[Uuid],
     owner_ip: &str,
 ) -> Result<
     Vec<(
-        Uuid,
         Uuid,
         String,
         bool,
@@ -390,7 +377,6 @@ pub(crate) async fn list_shared_records_by_ids(
 > {
     let rows = sqlx::query_as(
         "select \
-            sr.id, \
             sr.request_id, \
             sr.shared_at::text, \
             gr.shared, \
@@ -401,7 +387,7 @@ pub(crate) async fn list_shared_records_by_ids(
             (select count(*) from records r where r.request_id = sr.request_id) as play_count \
          from shared_records sr \
          join glm_requests gr on gr.id = sr.request_id \
-         where sr.id = any($1) \
+         where sr.request_id = any($1) \
            and (
              gr.client_ip = $2
              or ($2 = '::1' and gr.client_ip = '127.0.0.1')
@@ -409,7 +395,7 @@ pub(crate) async fn list_shared_records_by_ids(
            ) \
          order by sr.shared_at desc",
     )
-    .bind(ids)
+    .bind(request_ids)
     .bind(owner_ip)
     .fetch_all(db)
     .await?;

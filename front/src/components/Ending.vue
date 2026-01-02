@@ -275,6 +275,12 @@ const goDesign = () => {
     return;
   }
 
+  if (playEntry.value === 'shared' && !isOwner.value) {
+    sessionStorage.setItem('mg_play_entry', 'import');
+    router.push('/design');
+    return;
+  }
+
   if (securityLocked.value) {
     showToast(
       '检测到本地模型配置已被修改（数据安全），已禁用设计功能',
@@ -735,14 +741,17 @@ const fitTree = async () => {
 
   let scale = Math.min(availableW / view.w, availableH / view.h);
 
+  // 移动端检测
+  const isMobile = rect.width < 768;
+
   // 如果缩放比例太小，强制使用可读比例，并靠左对齐，保证让人看清
   if (scale < 0.6) {
-    scale = 0.8;
+    scale = isMobile ? 0.6 : 0.8; // 移动端使用更小的缩放
     zoom.value = scale;
-    // 靠左显示，垂直居中
+    // 移动端靠左显示，垂直居中
     pan.value = {
-      x: 40,
-      y: (rect.height - view.h * scale) / 2,
+      x: isMobile ? 20 : 40,
+      y: Math.max(20, (rect.height - view.h * scale) / 2),
     };
   } else {
     // 正常居中适配
@@ -794,12 +803,7 @@ const onPointerDown = (e: PointerEvent) => {
   dragStart.value = { x: e.clientX, y: e.clientY };
   isDragging.value = false;
 
-  // We don't capture immediately to allow click events to propagate naturally
-  // if no movement occurs. But we need to track movement.
-  // Actually, for smooth dragging, we usually want capture.
-  // Let's capture, but handle click vs drag manually.
-  // (e.currentTarget as HTMLElement | null)?.setPointerCapture?.(e.pointerId);
-
+  // Do NOT capture pointer immediately
   dragging.value = {
     x: e.clientX,
     y: e.clientY,
@@ -821,16 +825,22 @@ const onPointerMove = (e: PointerEvent) => {
       Math.abs(e.clientY - dragStart.value.y) > 5)
   ) {
     isDragging.value = true;
+    // Now we know it's a drag, capture the pointer to track movement even outside the element
+    (e.currentTarget as HTMLElement)?.setPointerCapture(e.pointerId);
   }
 
-  pan.value = { x: dragging.value.panX + dx, y: dragging.value.panY + dy };
+  if (isDragging.value) {
+    pan.value = { x: dragging.value.panX + dx, y: dragging.value.panY + dy };
+  }
 };
 
-const onPointerUp = () => {
+const onPointerUp = (e: PointerEvent) => {
+  // 释放 pointer capture
+  if (dragging.value) {
+    (e.currentTarget as HTMLElement)?.releasePointerCapture(e.pointerId);
+  }
   dragging.value = null;
-  // We don't reset isDragging here immediately if we need to check it in click handlers
-  // But click handlers usually fire after pointerup.
-  // Let's rely on isDragging in the click handler.
+  // 延迟重置 isDragging 以便点击事件可以检查它
   setTimeout(() => {
     isDragging.value = false;
   }, 50);
@@ -930,11 +940,11 @@ const copyJson = async () => {
 </script>
 
 <template>
-  <div class="relative h-screen w-full overflow-hidden bg-black text-white">
+  <div class="relative min-h-[100dvh] w-full bg-black text-white">
     <canvas ref="bgCanvasEl" class="absolute inset-0 h-full w-full pointer-events-none"></canvas>
     <div class="absolute inset-0 bg-gradient-to-b from-black/15 via-black/55 to-black pointer-events-none"></div>
 
-    <div class="relative z-10 h-full w-full overflow-y-auto px-6 md:px-10 py-10">
+    <div class="relative z-10 w-full px-6 md:px-10 py-10">
       <div class="w-full">
         <div class="flex flex-col gap-6">
           <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
@@ -978,9 +988,9 @@ const copyJson = async () => {
               </div>
 
               <button
-                v-if="playEntry === 'import' || (isOwner && playEntry === 'owner')"
+                v-if="playEntry === 'import' || (isOwner && playEntry === 'owner') || (!isOwner && playEntry === 'shared')"
                 @click="goDesign"
-                :disabled="playEntry === 'owner' && securityLocked"
+                :disabled="(playEntry === 'owner' && securityLocked)"
                 class="group relative inline-flex items-center justify-center px-4 py-3 rounded-xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-[0_0_25px_rgba(168,85,247,0.14)] transition-all gap-2 overflow-hidden w-full md:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <div class="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
@@ -1071,20 +1081,30 @@ const copyJson = async () => {
               </div>
               </div>
 
-              <div ref="treeWrapEl" class="mt-4 rounded-xl border border-white/10 bg-black/55 overflow-hidden h-[640px] md:h-[720px] relative touch-none" @wheel="onWheel" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp">
-                <svg class="absolute inset-0 w-full h-full select-none" :style="{ cursor: dragging ? 'grabbing' : 'grab' }">
-                  <defs>
-                    <linearGradient id="edge-gradient" gradientUnits="userSpaceOnUse" x1="0%" y1="0%" x2="100%" y2="0%">
-                      <stop offset="0%" stop-color="#9333ea" stop-opacity="0.3" />
-                      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.3" />
-                    </linearGradient>
-                    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
-                      <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" opacity="0.5" />
-                    </marker>
-                  </defs>
-                  
-                  <g :transform="`translate(${pan.x} ${pan.y}) scale(${zoom})`">
-                    <!-- Edges -->
+              <div ref="treeWrapEl" class="mt-4 rounded-xl border border-white/10 bg-black/55 overflow-hidden h-[640px] md:h-[720px] relative"
+                   style="touch-action: none; user-select: none;"
+                   @wheel="onWheel"
+                   @pointerdown="onPointerDown"
+                   @pointermove="onPointerMove"
+                   @pointerup="onPointerUp"
+                   @pointercancel="onPointerUp">
+                <!-- Transform Container -->
+                <div
+                  class="absolute top-0 left-0 w-full h-full origin-top-left will-change-transform"
+                  :style="{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }"
+                >
+                  <!-- Edges Layer (SVG) -->
+                  <svg class="absolute inset-0 overflow-visible pointer-events-none z-0" width="1" height="1">
+                    <defs>
+                      <linearGradient id="edge-gradient" gradientUnits="userSpaceOnUse" x1="0%" y1="0%" x2="100%" y2="0%">
+                        <stop offset="0%" stop-color="#9333ea" stop-opacity="0.3" />
+                        <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.3" />
+                      </linearGradient>
+                      <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+                        <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" opacity="0.5" />
+                      </marker>
+                    </defs>
+
                     <g>
                       <path
                         v-for="(e, idx) in treeGraph.edges"
@@ -1093,66 +1113,62 @@ const copyJson = async () => {
                           const a = treeGraph.nodes.find(n => n.id === e.from);
                           const b = treeGraph.nodes.find(n => n.id === e.to);
                           if (!a || !b) return '';
-                          
-                          // Connect from right of A to left of B
                           const ax = a.x + a.w;
                           const ay = a.y + a.h / 2;
                           const bx = b.x;
                           const by = b.y + b.h / 2;
-                          
                           const mx = (ax + bx) / 2;
                           return `M ${ax} ${ay} C ${mx} ${ay}, ${mx} ${by}, ${bx} ${by}`;
                         })()"
                         :stroke="(highlighted.has(e.from) && highlighted.has(e.to)) ? '#d946ef' : 'url(#edge-gradient)'"
-                        :stroke-width="(highlighted.has(e.from) && highlighted.has(e.to)) ? 3 : 1.5"
+                        :stroke-width="(highlighted.has(e.from) && highlighted.has(e.to)) ? (3 / zoom) : (1.5 / zoom)"
                         :stroke-opacity="(highlighted.has(e.from) && highlighted.has(e.to)) ? 0.8 : 0.3"
                         fill="none"
                         class="transition-all duration-500"
                         marker-end="url(#arrowhead)"
                       />
                     </g>
+                  </svg>
 
-                    <!-- Nodes -->
-                    <g>
-                      <foreignObject 
-                        v-for="n in treeGraph.nodes" 
-                        :key="n.id" 
-                        :x="n.x" 
-                        :y="n.y" 
-                        :width="n.w" 
-                        :height="n.h"
-                        class="overflow-visible"
-                      >
-                        <div 
-                          data-node
-                          @click.stop="onNodeClick(n.id)" 
-                          @pointerenter="hoveredId = n.id" 
-                          @pointerleave="hoveredId = ''"
-                          :class="[
-                            'w-full h-full rounded-xl border backdrop-blur-md flex flex-col justify-center px-4 py-2 transition-all duration-300 cursor-pointer shadow-lg group hover:scale-105',
-                            n.kind === 'ending' 
-                              ? 'bg-cyan-900/20 border-cyan-500/30 hover:border-cyan-400' 
-                              : 'bg-neutral-900/40 border-purple-500/20 hover:border-purple-400',
-                            highlighted.has(n.id) ? 'ring-2 ring-purple-500/50 shadow-[0_0_15px_rgba(168,85,247,0.3)]' : ''
-                          ]"
-                        >
-                          <div class="flex items-center justify-between mb-1">
-                            <span :class="['text-[10px] font-mono uppercase tracking-wider', n.kind === 'ending' ? 'text-cyan-400' : 'text-purple-400']">
-                              {{ n.kind === 'ending' ? 'ENDING' : 'NODE' }}
-                            </span>
-                            <div v-if="highlighted.has(n.id)" class="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shadow-[0_0_5px_rgba(74,222,128,0.8)]"></div>
-                          </div>
-                          <div class="text-xs font-bold text-white/90 truncate font-mono">
-                            {{ n.label }}
-                          </div>
-                          
-                          <!-- Hover Glow -->
-                          <div class="absolute inset-0 rounded-xl bg-gradient-to-r from-white/0 via-white/5 to-white/0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"></div>
-                        </div>
-                      </foreignObject>
-                    </g>
-                  </g>
-                </svg>
+                  <!-- Nodes Layer (HTML) -->
+                  <div
+                    v-for="n in treeGraph.nodes"
+                    :key="n.id"
+                    class="absolute z-10"
+                    :style="{
+                      left: `${n.x}px`,
+                      top: `${n.y}px`,
+                      width: `${n.w}px`,
+                      height: `${n.h}px`
+                    }"
+                  >
+                    <div
+                      data-node
+                      :data-node-id="n.id"
+                      @click.stop="onNodeClick(n.id)"
+                      @pointerenter="hoveredId = n.id"
+                      @pointerleave="hoveredId = ''"
+                      :class="[
+                        'w-full h-full rounded-xl border backdrop-blur-md flex flex-col justify-center px-4 py-2 transition-all duration-300 cursor-pointer shadow-lg group hover:scale-105',
+                        n.kind === 'ending'
+                          ? 'bg-cyan-900/20 border-cyan-500/30 hover:border-cyan-400'
+                          : 'bg-neutral-900/40 border-purple-500/20 hover:border-purple-400',
+                        highlighted.has(n.id) ? 'ring-2 ring-purple-500/50 shadow-[0_0_15px_rgba(168,85,247,0.3)]' : ''
+                      ]"
+                    >
+                      <div class="flex items-center justify-between mb-1 pointer-events-none">
+                        <span :class="['text-[10px] font-mono uppercase tracking-wider', n.kind === 'ending' ? 'text-cyan-400' : 'text-purple-400']">
+                          {{ n.kind === 'ending' ? 'ENDING' : 'NODE' }}
+                        </span>
+                        <div v-if="highlighted.has(n.id)" class="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shadow-[0_0_5px_rgba(74,222,128,0.8)]"></div>
+                      </div>
+                      <div class="text-xs font-bold text-white/90 truncate font-mono pointer-events-none">{{ n.label }}</div>
+                      
+                      <!-- Hover Glow -->
+                      <div class="absolute inset-0 rounded-xl bg-gradient-to-r from-white/0 via-white/5 to-white/0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"></div>
+                    </div>
+                  </div>
+                </div>
 
                 <div 
                   v-if="selectedNodeInfo" 

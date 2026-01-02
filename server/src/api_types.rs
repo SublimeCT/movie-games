@@ -90,11 +90,13 @@ pub(crate) struct CharacterInput {
     pub(crate) is_main: bool,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ExpandWorldviewRequest {
     pub(crate) theme: String,
     pub(crate) synopsis: Option<String>,
+    #[serde(default)]
+    pub(crate) genre: Option<Vec<String>>,
     pub(crate) language: Option<String>,
     pub(crate) api_key: Option<String>,
     #[serde(default)]
@@ -103,13 +105,15 @@ pub(crate) struct ExpandWorldviewRequest {
     pub(crate) model: Option<String>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ExpandCharacterRequest {
     pub(crate) theme: String,
     pub(crate) worldview: String,
     pub(crate) synopsis: Option<String>,
     pub(crate) existing_characters: Vec<CharacterInput>,
+    #[serde(default)]
+    pub(crate) genre: Option<Vec<String>>,
     pub(crate) language: Option<String>,
     pub(crate) api_key: Option<String>,
     #[serde(default)]

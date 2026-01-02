@@ -133,7 +133,7 @@ pub(crate) fn convert_lite_to_full(lite: MovieTemplateLite, language: &str) -> M
     MovieTemplate {
         project_id: uuid::Uuid::new_v4().to_string(),
         title: lite.title.unwrap_or_else(|| "Untitled Project".to_string()),
-        version: "1.0.0".to_string(),
+        version: "1.0.1".to_string(),
         owner: "User".to_string(),
         meta: types::MetaInfo {
             logline: lite

@@ -312,7 +312,7 @@ watch(
 </script>
 
 <template>
-  <div class="relative min-h-screen w-full overflow-hidden bg-black text-white">
+  <div class="relative min-h-screen w-full bg-black text-white">
     <WavyBackground
       container-class="fixed inset-0 z-0 pointer-events-none"
       :colors="['#38bdf8', '#818cf8', '#c084fc', '#e879f9', '#22d3ee']"

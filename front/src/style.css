@@ -17,15 +17,17 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+html {
+  overflow-y: auto; /* Ensure vertical scrolling is enabled */
+  -webkit-overflow-scrolling: touch; /* Enable smooth scrolling on iOS */
+}
+
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
   min-width: 320px;
   min-height: 100vh;
   width: 100%;
-  max-width: 100vw;
-  overflow-x: hidden;
+  /* Removed overflow-x: hidden from body to prevent mobile scroll locking */
   background-color: #000000;
   background-image: radial-gradient(circle at center, #111 0%, #000 100%);
 }

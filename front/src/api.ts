@@ -311,6 +311,7 @@ export async function generatePrompt(req: GenerateRequest): Promise<string> {
 export async function expandSynopsis(
   theme: string,
   currentSynopsis?: string,
+  genre?: string[],
   language?: string,
   apiKey?: string,
   baseUrl?: string,
@@ -322,6 +323,7 @@ export async function expandSynopsis(
     body: JSON.stringify({
       theme,
       synopsis: currentSynopsis,
+      genre,
       language,
       apiKey,
       baseUrl,
@@ -336,6 +338,7 @@ export async function expandCharacter(
   theme: string,
   synopsis: string,
   existingCharacters: CharacterInput[],
+  genre?: string[],
   language?: string,
   apiKey?: string,
   baseUrl?: string,
@@ -348,6 +351,7 @@ export async function expandCharacter(
       theme,
       worldview: synopsis,
       existingCharacters,
+      genre,
       language,
       apiKey,
       baseUrl,
@@ -356,4 +360,46 @@ export async function expandCharacter(
   });
 
   return parseApiResponse<CharacterInput[]>(response);
+}
+
+export async function expandSynopsisPrompt(
+  theme: string,
+  currentSynopsis?: string,
+  genre?: string[],
+  language?: string,
+): Promise<string> {
+  const response = await fetch(`${API_BASE}/expand/worldview/prompt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      theme,
+      synopsis: currentSynopsis,
+      genre,
+      language,
+    }),
+  });
+
+  return parseApiResponse<string>(response);
+}
+
+export async function expandCharacterPrompt(
+  theme: string,
+  synopsis: string,
+  existingCharacters: CharacterInput[],
+  genre?: string[],
+  language?: string,
+): Promise<string> {
+  const response = await fetch(`${API_BASE}/expand/character/prompt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      theme,
+      worldview: synopsis,
+      existingCharacters,
+      genre,
+      language,
+    }),
+  });
+
+  return parseApiResponse<string>(response);
 }

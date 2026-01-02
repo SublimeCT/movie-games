@@ -12,6 +12,10 @@ mod sensitive;
 mod template;
 #[cfg(test)]
 mod tests_repro;
+#[cfg(test)]
+mod tests_repro_sensitive_v2;
+#[cfg(test)]
+mod tests_sensitive;
 mod types;
 
 #[tokio::main]
@@ -73,4 +77,6 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
+    
+    println!("Received termination signal. Shutting down gracefully...");
 }

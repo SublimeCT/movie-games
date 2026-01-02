@@ -28,9 +28,11 @@ import {
   updateGameTemplate,
 } from '../api';
 import { useGameState } from '../hooks/useGameState';
+import { compressImage } from '../utils/image';
 import type { Choice, Ending, MovieTemplate, StoryNode } from '../types/movie';
 import CharacterAvatar from './ui/CharacterAvatar.vue';
 import CinematicLoader from './ui/CinematicLoader.vue';
+import ImagePreview from './ui/ImagePreview.vue';
 import { WavyBackground } from './ui/wavy-background';
 
 type PlayEntry = 'owner' | 'shared' | 'import';
@@ -181,6 +183,11 @@ const isSaving = ref(false);
 const showJsonModal = ref(false);
 
 const showImportModal = ref(false);
+
+// 图片预览状态
+const imagePreviewOpen = ref(false);
+const imagePreviewSrc = ref('');
+
 const importTab = ref<'paste' | 'file'>('paste');
 const importText = ref('');
 const importError = ref('');
@@ -204,6 +211,23 @@ const openImportModal = () => {
  */
 const closeImportModal = () => {
   showImportModal.value = false;
+};
+
+/**
+ * 打开图片预览。
+ */
+const openImagePreview = (src: string) => {
+  if (!src) return;
+  imagePreviewSrc.value = src;
+  imagePreviewOpen.value = true;
+};
+
+/**
+ * 关闭图片预览。
+ */
+const closeImagePreview = () => {
+  imagePreviewOpen.value = false;
+  imagePreviewSrc.value = '';
 };
 
 /**
@@ -706,12 +730,39 @@ const syncAvatarToDraftByName = (
   if (changed) dirty.value = true;
 };
 
+const setGameBackground = async (e: Event) => {
+  const input = e.target as HTMLInputElement | null;
+  const file = input?.files?.[0];
+  if (!file) return;
+  try {
+    const compressed = await compressImage(file, 300 * 1024);
+    if (draft.value) {
+      draft.value.backgroundImageBase64 = compressed;
+      dirty.value = true;
+    }
+    showToast('背景图片已更新', 'success');
+  } catch (err) {
+    console.error(err);
+    showToast('图片处理失败', 'error');
+  } finally {
+    if (input) input.value = '';
+  }
+};
+
+const clearGameBackground = () => {
+  if (draft.value) {
+    draft.value.backgroundImageBase64 = undefined;
+    dirty.value = true;
+    showToast('背景图片已清除', 'info');
+  }
+};
+
 const setCharacterAvatar = async (idx: number, e: Event) => {
   const input = e.target as HTMLInputElement | null;
   const file = input?.files?.[0];
   if (!file) return;
   try {
-    const dataUrl = await fileToDataUrl(file);
+    const dataUrl = await compressImage(file, 300 * 1024);
     const next = [...characters.value];
     const cur = next[idx];
     if (!cur) return;
@@ -1175,12 +1226,16 @@ const fitTree = async () => {
 
   let scale = Math.min(availableW / view.w, availableH / view.h);
 
+  // 移动端检测
+  const isMobile = rect.width < 768;
+
   if (scale < 0.6) {
-    scale = 0.8;
+    scale = isMobile ? 0.6 : 0.8; // 移动端使用更小的缩放
     zoom.value = scale;
+    // 移动端靠左显示，垂直居中
     pan.value = {
-      x: 40,
-      y: (rect.height - view.h * scale) / 2,
+      x: isMobile ? 20 : 40,
+      y: Math.max(20, (rect.height - view.h * scale) / 2),
     };
   } else {
     scale = clamp(scale, 0.5, 1.5);
@@ -1226,6 +1281,10 @@ const onWheel = (e: WheelEvent) => {
 const onPointerDown = (e: PointerEvent) => {
   dragStart.value = { x: e.clientX, y: e.clientY };
   isDragging.value = false;
+  
+  // Do NOT capture pointer immediately.
+  // Wait until movement threshold is reached (in onPointerMove) to decide if it's a drag.
+  // This allows the browser to handle "click" naturally on children if no drag occurs.
 
   dragging.value = {
     x: e.clientX,
@@ -1247,16 +1306,34 @@ const onPointerMove = (e: PointerEvent) => {
       Math.abs(e.clientY - dragStart.value.y) > 5)
   ) {
     isDragging.value = true;
+    // Now we know it's a drag, capture the pointer to track movement even outside the element
+    (e.currentTarget as HTMLElement)?.setPointerCapture(e.pointerId);
   }
 
-  pan.value = { x: dragging.value.panX + dx, y: dragging.value.panY + dy };
+  if (isDragging.value) {
+    pan.value = { x: dragging.value.panX + dx, y: dragging.value.panY + dy };
+  }
 };
 
-const onPointerUp = () => {
-  dragging.value = null;
-  setTimeout(() => {
+const onPointerUp = (e: PointerEvent) => {
+  if (isDragging.value) {
+    // If we were dragging, release capture
+    (e.currentTarget as HTMLElement)?.releasePointerCapture(e.pointerId);
+    
+    // Prevent any subsequent click from firing (though capture usually handles this)
+    // We can use a short timeout to clear the dragging flag, 
+    // so that any click event firing immediately after this knows it was a drag.
+    setTimeout(() => {
+      isDragging.value = false;
+    }, 50);
+  } else {
+    // If we were NOT dragging, we didn't capture.
+    // The browser will fire a 'click' event on the original target (the Node) automatically.
+    // So we don't need to do anything here.
     isDragging.value = false;
-  }, 50);
+  }
+  
+  dragging.value = null;
 };
 
 const onNodeClick = (id: string) => {
@@ -2065,7 +2142,7 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
 </script>
 
 <template>
-  <div class="relative min-h-screen w-full overflow-hidden bg-black text-white">
+  <div class="relative min-h-[100dvh] w-full bg-black text-white">
     <WavyBackground
       container-class="fixed inset-0 z-0 pointer-events-none"
       :colors="['#38bdf8', '#818cf8', '#c084fc', '#e879f9', '#22d3ee']"
@@ -2075,15 +2152,15 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
     />
 
     <div class="relative z-10 mx-auto w-full max-w-6xl px-4 md:px-6 py-8 md:py-10">
-      <header class="flex items-start justify-between gap-4">
+      <header class="flex flex-col items-start gap-4 md:gap-6">
         <div class="flex items-start gap-3">
           <button
             @click="goBack"
-            class="group relative inline-flex items-center justify-center w-11 h-11 rounded-2xl border border-white/10 bg-black/35 backdrop-blur-md hover:bg-black/55 transition-all shadow-[0_0_18px_rgba(168,85,247,0.18)] overflow-hidden"
+            class="group relative inline-flex items-center justify-center flex-shrink-0 w-14 h-14 md:w-11 md:h-11 rounded-2xl border border-white/10 bg-black/35 backdrop-blur-md hover:bg-black/55 transition-all shadow-[0_0_18px_rgba(168,85,247,0.18)] overflow-hidden"
             title="返回"
           >
             <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700"></div>
-            <ArrowLeft class="w-5 h-5 text-white/80 relative z-10" />
+            <ArrowLeft class="w-7 h-7 md:w-5 md:h-5 text-white/80 relative z-10" />
           </button>
 
           <div>
@@ -2101,7 +2178,7 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
           </div>
         </div>
 
-        <div class="flex flex-col md:flex-row gap-2 md:gap-3 items-stretch md:items-center">
+        <div class="flex flex-wrap gap-2 md:gap-3 items-center flex-shrink-0">
           <button
             @click="goHome"
             class="group relative inline-flex items-center justify-center px-4 py-3 rounded-2xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md transition-all gap-2 overflow-hidden whitespace-nowrap"
@@ -2248,9 +2325,50 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                   <div class="text-sm font-bold text-white/80">游戏主题</div>
                   <input
                     v-model="theme"
+                    maxlength="20"
                     class="w-full px-4 py-3 rounded-2xl border border-white/10 bg-black/35 backdrop-blur-md text-white/90 placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-purple-500/40"
-                    placeholder="例如：赛博朋克背景下的硬汉侦探故事..."
+                    placeholder="例如：赛博朋克背景下的硬汉侦探故事... (Max 20字)"
                   />
+                </div>
+
+                <div class="space-y-2">
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="text-sm font-bold text-white/80">背景图片</div>
+                    <div class="flex items-center gap-2">
+                       <input
+                         id="game-bg-upload"
+                         type="file"
+                         accept="image/*"
+                         class="hidden"
+                         @change="setGameBackground"
+                       />
+                       <label
+                         for="game-bg-upload"
+                         class="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-white/10 bg-black/35 hover:bg-black/55 transition text-xs text-white/80 cursor-pointer whitespace-nowrap"
+                       >
+                         上传 (Max 300KB)
+                       </label>
+                       <button
+                         type="button"
+                         @click="clearGameBackground"
+                         :disabled="!draft?.backgroundImageBase64"
+                         class="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-white/10 bg-black/25 hover:bg-black/45 transition text-xs text-white/70 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                       >
+                         清除
+                       </button>
+                    </div>
+                  </div>
+                  
+                  <div v-if="draft?.backgroundImageBase64" class="relative w-full h-32 rounded-2xl overflow-hidden border border-white/10 bg-black/50 group cursor-pointer" @click="openImagePreview(draft.backgroundImageBase64!)">
+                    <img :src="draft.backgroundImageBase64" class="w-full h-full object-cover" />
+                    <div class="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors"></div>
+                    <div class="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/30">
+                      <div class="text-xs font-bold text-white/90">点击预览</div>
+                    </div>
+                  </div>
+                  <div v-else class="w-full h-12 rounded-2xl border border-dashed border-white/10 bg-white/5 flex items-center justify-center text-xs text-white/30">
+                    暂无背景图
+                  </div>
                 </div>
 
                 <div class="space-y-2">
@@ -2325,10 +2443,25 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                     >
                       <div class="flex flex-col md:flex-row gap-4">
                         <div class="flex items-center justify-center md:justify-start">
+                          <div
+                            v-if="c.avatarPath"
+                            class="relative cursor-pointer group"
+                            @click="openImagePreview(c.avatarPath!)"
+                          >
+                            <CharacterAvatar
+                              :name="c.name"
+                              :gender="c.gender === '女' ? 'female' : c.gender === '男' ? 'male' : 'other'"
+                              :avatarPath="c.avatarPath"
+                              className="w-20 h-20"
+                            />
+                            <div class="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/30 rounded-full pointer-events-none">
+                              <div class="text-xs font-bold text-white/90">预览</div>
+                            </div>
+                          </div>
                           <CharacterAvatar
+                            v-else
                             :name="c.name"
                             :gender="c.gender === '女' ? 'female' : c.gender === '男' ? 'male' : 'other'"
-                            :avatarPath="c.avatarPath"
                             className="w-20 h-20"
                           />
                         </div>
@@ -2337,6 +2470,7 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                           <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <input
                               v-model="c.name"
+                              maxlength="100"
                               class="w-full px-3 py-2.5 rounded-xl border border-white/10 bg-black/35 text-white/90 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
                               placeholder="名字"
                             />
@@ -2353,6 +2487,7 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                           <textarea
                             v-model="c.description"
                             rows="3"
+                            maxlength="100"
                             class="mt-3 w-full px-3 py-2.5 rounded-xl border border-white/10 bg-black/35 text-white/90 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
                             placeholder="身份与性格描述"
                           ></textarea>
@@ -2468,25 +2603,31 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
 
                   <div
                     ref="treeWrapEl"
-                    class="mt-4 rounded-xl border border-white/10 bg-black/55 overflow-hidden h-[640px] md:h-[720px] relative touch-none"
+                    class="mt-4 rounded-xl border border-white/10 bg-black/55 overflow-hidden h-[640px] md:h-[720px] relative"
+                    style="touch-action: none; user-select: none;"
                     @wheel="onWheel"
                     @pointerdown="onPointerDown"
                     @pointermove="onPointerMove"
                     @pointerup="onPointerUp"
                     @pointercancel="onPointerUp"
                   >
-                    <svg class="absolute inset-0 w-full h-full select-none" :style="{ cursor: dragging ? 'grabbing' : 'grab' }">
-                      <defs>
-                        <linearGradient id="edge-gradient" gradientUnits="userSpaceOnUse" x1="0%" y1="0%" x2="100%" y2="0%">
-                          <stop offset="0%" stop-color="#9333ea" stop-opacity="0.3" />
-                          <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.3" />
-                        </linearGradient>
-                        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
-                          <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" opacity="0.5" />
-                        </marker>
-                      </defs>
+                    <!-- Transform Container -->
+                    <div
+                      class="absolute top-0 left-0 w-full h-full origin-top-left will-change-transform"
+                      :style="{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }"
+                    >
+                      <!-- Edges Layer -->
+                      <svg class="absolute inset-0 overflow-visible pointer-events-none z-0" width="1" height="1">
+                        <defs>
+                          <linearGradient id="edge-gradient" gradientUnits="userSpaceOnUse" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" stop-color="#9333ea" stop-opacity="0.3" />
+                            <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.3" />
+                          </linearGradient>
+                          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+                            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" opacity="0.5" />
+                          </marker>
+                        </defs>
 
-                      <g :transform="`translate(${pan.x} ${pan.y}) scale(${zoom})`">
                         <g>
                           <path
                             v-for="(e, idx) in treeGraph.edges"
@@ -2503,50 +2644,52 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                               return `M ${ax} ${ay} C ${mx} ${ay}, ${mx} ${by}, ${bx} ${by}`;
                             })()"
                             :stroke="(highlighted.has(e.from) && highlighted.has(e.to)) ? '#d946ef' : 'url(#edge-gradient)'"
-                            :stroke-width="(highlighted.has(e.from) && highlighted.has(e.to)) ? 3 : 1.5"
+                            :stroke-width="(highlighted.has(e.from) && highlighted.has(e.to)) ? (3 / zoom) : (1.5 / zoom)"
                             :stroke-opacity="(highlighted.has(e.from) && highlighted.has(e.to)) ? 0.8 : 0.3"
                             fill="none"
                             class="transition-all duration-500"
                             marker-end="url(#arrowhead)"
                           />
                         </g>
+                      </svg>
 
-                        <g>
-                          <foreignObject
-                            v-for="n in treeGraph.nodes"
-                            :key="n.id"
-                            :x="n.x"
-                            :y="n.y"
-                            :width="n.w"
-                            :height="n.h"
-                            class="overflow-visible"
-                          >
-                            <div
-                              data-node
-                              @click.stop="onNodeClick(n.id)"
-                              @pointerenter="hoveredId = n.id"
-                              @pointerleave="hoveredId = ''"
-                              :class="[
-                                'w-full h-full rounded-xl border backdrop-blur-md flex flex-col justify-center px-4 py-2 transition-all duration-300 cursor-pointer shadow-lg group hover:scale-105',
-                                n.kind === 'ending'
-                                  ? 'bg-cyan-900/20 border-cyan-500/30 hover:border-cyan-400'
-                                  : 'bg-neutral-900/40 border-purple-500/20 hover:border-purple-400',
-                                highlighted.has(n.id) ? 'ring-2 ring-purple-500/50 shadow-[0_0_15px_rgba(168,85,247,0.3)]' : ''
-                              ]"
-                            >
-                              <div class="flex items-center justify-between mb-1">
-                                <span :class="['text-[10px] font-mono uppercase tracking-wider', n.kind === 'ending' ? 'text-cyan-400' : 'text-purple-400']">
-                                  {{ n.kind === 'ending' ? 'ENDING' : 'NODE' }}
-                                </span>
-                                <div v-if="highlighted.has(n.id)" class="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shadow-[0_0_5px_rgba(74,222,128,0.8)]"></div>
-                              </div>
-                              <div class="text-xs font-bold text-white/90 truncate font-mono">{{ n.label }}</div>
-                              <div class="absolute inset-0 rounded-xl bg-gradient-to-r from-white/0 via-white/5 to-white/0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"></div>
-                            </div>
-                          </foreignObject>
-                        </g>
-                      </g>
-                    </svg>
+                      <!-- Nodes Layer (HTML) -->
+                      <div
+                        v-for="n in treeGraph.nodes"
+                        :key="n.id"
+                        class="absolute z-10"
+                        :style="{
+                          left: `${n.x}px`,
+                          top: `${n.y}px`,
+                          width: `${n.w}px`,
+                          height: `${n.h}px`
+                        }"
+                      >
+                        <div
+                          data-node
+                          :data-node-id="n.id"
+                          @click.stop="onNodeClick(n.id)"
+                          @pointerenter="hoveredId = n.id"
+                          @pointerleave="hoveredId = ''"
+                          :class="[
+                            'w-full h-full rounded-xl border backdrop-blur-md flex flex-col justify-center px-4 py-2 transition-all duration-300 cursor-pointer shadow-lg group hover:scale-105',
+                            n.kind === 'ending'
+                              ? 'bg-cyan-900/20 border-cyan-500/30 hover:border-cyan-400'
+                              : 'bg-neutral-900/40 border-purple-500/20 hover:border-purple-400',
+                            highlighted.has(n.id) ? 'ring-2 ring-purple-500/50 shadow-[0_0_15px_rgba(168,85,247,0.3)]' : ''
+                          ]"
+                        >
+                          <div class="flex items-center justify-between mb-1 pointer-events-none">
+                            <span :class="['text-[10px] font-mono uppercase tracking-wider', n.kind === 'ending' ? 'text-cyan-400' : 'text-purple-400']">
+                              {{ n.kind === 'ending' ? 'ENDING' : 'NODE' }}
+                            </span>
+                            <div v-if="highlighted.has(n.id)" class="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shadow-[0_0_5px_rgba(74,222,128,0.8)]"></div>
+                          </div>
+                          <div class="text-xs font-bold text-white/90 truncate font-mono pointer-events-none">{{ n.label }}</div>
+                          <div class="absolute inset-0 rounded-xl bg-gradient-to-r from-white/0 via-white/5 to-white/0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"></div>
+                        </div>
+                      </div>
+                    </div>
 
                     <div
                       v-if="selectedNodeInfo"
@@ -2742,6 +2885,7 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                   <input
                     :value="editingNodeId || ''"
                     @change="renameNodeIfNeeded(String(editingNodeId || ''), String(($event.target as HTMLInputElement).value || ''))"
+                    maxlength="100"
                     class="w-full px-4 py-3 rounded-2xl border border-white/10 bg-black/35 text-white/90 focus:outline-none focus:ring-2 focus:ring-purple-500/40"
                     :disabled="!canEdit"
                   />
@@ -2779,6 +2923,7 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                   :value="editingNode.content"
                   @input="updateEditingNodeContent(String(editingNodeId || ''), $event)"
                   rows="6"
+                  maxlength="200"
                   class="w-full px-4 py-3 rounded-2xl border border-white/10 bg-black/35 text-white/90 focus:outline-none focus:ring-2 focus:ring-purple-500/40"
                   :disabled="!canEdit"
                 ></textarea>
@@ -2808,6 +2953,7 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                       <input
                         :value="c.text"
                         @input="updateChoice(String(editingNodeId || ''), idx, { text: String(($event.target as HTMLInputElement).value || '') })"
+                        maxlength="100"
                         class="w-full px-3 py-2.5 rounded-xl border border-white/10 bg-black/35 text-white/90 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
                         placeholder="选项文本"
                         :disabled="!canEdit"
@@ -2924,6 +3070,7 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                 <input
                   :value="editingEndingKey || ''"
                   @change="renameEndingIfNeeded(String(editingEndingKey || ''), String(($event.target as HTMLInputElement).value || ''))"
+                  maxlength="100"
                   class="w-full px-4 py-3 rounded-2xl border border-white/10 bg-black/35 text-white/90 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/30"
                   :disabled="!canEdit"
                 />
@@ -2949,6 +3096,7 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                   <input
                     :value="editingEnding.nodeId || ''"
                     @input="patchDraft((d) => { const k = String(editingEndingKey || ''); if (!k) return; d.endings = d.endings || {}; d.endings[k] = { ...d.endings[k]!, nodeId: String(($event.target as HTMLInputElement).value || '') || undefined }; })"
+                    maxlength="100"
                     class="w-full px-4 py-3 rounded-2xl border border-white/10 bg-black/35 text-white/90 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/30"
                     :disabled="!canEdit"
                     placeholder="例如：start 或 12"
@@ -2962,6 +3110,7 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                   :value="editingEnding.description"
                   @input="patchDraft((d) => { const k = String(editingEndingKey || ''); if (!k) return; d.endings = d.endings || {}; d.endings[k] = { ...d.endings[k]!, description: String(($event.target as HTMLTextAreaElement).value || '') }; })"
                   rows="5"
+                  maxlength="40"
                   class="w-full px-4 py-3 rounded-2xl border border-white/10 bg-black/35 text-white/90 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/30"
                   :disabled="!canEdit"
                 ></textarea>
@@ -3203,5 +3352,13 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
         </div>
       </div>
     </Transition>
+
+    <!-- 图片预览 -->
+    <ImagePreview
+      :open="imagePreviewOpen"
+      :src="imagePreviewSrc"
+      @close="closeImagePreview"
+    />
+
   </div>
 </template>

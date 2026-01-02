@@ -422,6 +422,9 @@ export function useGameState() {
     path = '/game',
   ) => {
     sessionStorage.setItem('mg_play_entry', entry);
+    // When loading a local game (owner/import), clear any shared session ID
+    // to prevent "Restart" from redirecting to a previously played shared game.
+    sessionStorage.removeItem('mg_shared_play_id');
 
     localStorage.removeItem('mg_current_node');
     localStorage.removeItem('mg_player_state');
@@ -457,6 +460,8 @@ export function useGameState() {
    * 开始新游戏
    */
   const handleGameStart = async (data: MovieTemplate) => {
+    // Clear shared play ID to prevent "Replay" from redirecting to a shared game
+    sessionStorage.removeItem('mg_shared_play_id');
     await loadGameData(data, 'owner', '/game');
   };
 
@@ -469,6 +474,19 @@ export function useGameState() {
   };
 
   /**
+   * 清除当前游戏数据 (用于生成新游戏前防止串号)
+   */
+  const clearGameData = () => {
+    gameData.value = null;
+    localStorage.removeItem('mg_active_game_data');
+    localStorage.removeItem('mg_current_node');
+    localStorage.removeItem('mg_player_state');
+    localStorage.removeItem('mg_history_stack');
+    localStorage.removeItem('mg_affinity_state');
+    endingData.value = null;
+  };
+
+  /**
    * 重新开始当前游戏
    */
   const handleRestartPlay = () => {
@@ -478,14 +496,19 @@ export function useGameState() {
     localStorage.removeItem('mg_affinity_state');
     endingData.value = null;
 
+    const sharedId = String(sessionStorage.getItem('mg_shared_play_id') || '').trim();
+    if (sharedId) {
+      router.push(`/play/${encodeURIComponent(sharedId)}`);
+      return;
+    }
+
     const entry = String(sessionStorage.getItem('mg_play_entry') || '').trim();
     if (entry === 'shared') {
-      const sharedId =
-        String(sessionStorage.getItem('mg_shared_play_id') || '').trim() ||
+      const storedSharedId =
         String(gameData.value?.requestId || '').trim();
 
-      if (sharedId) {
-        router.push(`/play/${encodeURIComponent(sharedId)}`);
+      if (storedSharedId) {
+        router.push(`/play/${encodeURIComponent(storedSharedId)}`);
         return;
       }
 
@@ -517,5 +540,6 @@ export function useGameState() {
     handleGameEnd,
     handleRestartPlay,
     handleRemake,
+    clearGameData,
   };
 }

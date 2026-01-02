@@ -11,6 +11,28 @@
 - 后端启动会自动执行 SQLx migrations
 - 已经应用到数据库的迁移文件视为不可变；任何结构变更必须新增迁移文件，禁止修改已应用迁移
 - 若出现 `VersionMismatch`，必须通过“恢复旧迁移文件原内容 + 新增迁移承载变更”修复；`MOVIE_GAMES_ALLOW_MIGRATE_VERSION_MISMATCH=1` 仅用于应急排障，不作为长期方案
+- 后端敏感内容过滤基于 `sensitive-rs`（不允许硬编码词库）：
+  - 必须启用 `sensitive-rs` 的默认词库（与 `Filter::with_default_dict()` 一致的 `dict/dict.txt`）
+  - 默认词库加载顺序：优先 `SENSITIVE_DEFAULT_DICT_PATH`，否则尝试运行目录 `dict/dict.txt`，否则尝试从本机 Cargo registry 自动定位；若仍失败则启动失败
+  - 额外词库来源：环境变量 `SENSITIVE_WORDS`（逗号/换行等分隔）或文件 `SENSITIVE_WORDS_PATH`（默认 `./sensitive_words.txt`）
+  - `SensitiveFilter::from_words` 仅用于测试用例构造（不参与生产编译）
+  - 已接入的过滤范围：前端请求入参统一清洗、数据库日志/错误信息脱敏、对外返回内容脱敏（均以 `*` 替换）
+- **输入限制与验证**:
+  - **图片限制**: 所有上传的 Base64 图片（背景图、头像等）必须在前端进行压缩，大小不得超过 **300KB**。后端会对超过此限制的请求直接报错。
+  - **字段长度限制**:
+    - **标题/主题 (Title/Theme)**: 最多 **20** 个字符。
+    - **其他文本字段**: 严格遵循 Prompt 定义的长度限制；若 Prompt 未明确限制，则默认最多 **100** 个字符。
+    - **剧情简介 (Synopsis)**: 遵循 Prompt 定义的 **300-500** 字范围（前端放宽至 600 以容错）。
+    - **节点内容**: 遵循 Prompt 定义的 **45-85** 字范围（前端放宽至 200 以容错）。
+- **多端适配 (Mobile/PC Compatibility)**:
+  - 所有页面（尤其是 **剧情设计器** 和 **结局页** 的剧情树）必须同时适配 PC 端和移动端。
+  - **剧情树可视化**:
+    - 移动端必须支持拖拽平移 (`Touch` 事件支持) 和双指缩放/按钮缩放。
+    - 节点渲染必须使用原生 HTML 元素以保证交互（如点击弹窗）的可靠性，避免 SVG `foreignObject` 的兼容性问题。
+    - 线条与箭头必须在缩放时保持视觉清晰（动态调整 `stroke-width`）。
+  - **滚动交互**:
+    - 所有长页面必须支持原生垂直滚动，禁止在 `body` 上使用 `display: flex; place-items: center` 等导致移动端视口内容截断的布局样式。
+    - 避免在根容器使用 `h-full` 或 `overflow-hidden` 限制滚动，应使用 `min-h-screen` 配合自然文档流。
 
 ## 1. 产品页面清单 (Page Inventory)
 
@@ -25,15 +47,18 @@
         *   **去重机制**: 连续 3 次点击内不会出现重复主题 (通过 `recentThemeIndices` 记录最近选择的历史)。
     *   **剧情类型 (Genres)**: 多选标签 (预设：科幻, 剧情, 爱情, 悬疑, 喜剧, 青春, 历史, 冒险, 武侠, 伦理, 悲剧, 职场, 爽文)。支持手动添加自定义类型。
     *   **剧情简介 (Synopsis)**: 多行文本框。
-        *   **AI 智能扩写**: 点击按钮调用 `/expand/worldview` 接口，根据主题自动生成简介。
+        *   **AI 智能扩写**: 点击按钮调用 `/expand/worldview` 接口，根据主题自动生成简介。若主题或剧情类型包含敏感词，后端会直接报错拒绝调用 LLM，前端显示错误提示。
+        *   **获取提示词**: 点击右侧 ✨ 按钮，调用 `/expand/worldview/prompt` 接口获取并展示对应的 Prompt，不消耗 AI 次数。
     *   **角色阵容 (Characters)**: 角色列表。
         *   每位角色包含: 名字, 性别 (默认为"其他"), 身份/性格描述, 是否主角 (复选框)。
         *   角色本地存储 (`mg_characters`) 允许附带 `avatarPath`（由设计器上传头像后写入）；调用后端生成/扩写/导入保存接口时会自动剔除该字段，仅提交 `name/description/gender/isMain`。
-        *   **AI 生成角色**: 点击按钮调用 `/expand/character` 接口，根据主题和简介自动生成角色列表。
+        *   **AI 生成角色**: 点击按钮调用 `/expand/character` 接口，根据主题和简介自动生成角色列表。若主题或剧情类型包含敏感词，后端会直接报错拒绝调用 LLM，前端显示错误提示。
+        *   **获取提示词**: 点击右侧 ✨ 按钮，调用 `/expand/character/prompt` 接口获取并展示对应的 Prompt，不消耗 AI 次数。
         *   支持手动添加/删除角色。
 2.  **操作按钮**:
     *   **开始生成**: 校验必填项 (主题) 后，跳转至 `/generating`。
     *   **仅生成提示词**: 调用 `/generate/prompt`，在弹窗中显示生成的 Prompt，支持一键复制。
+    *   **设计**: 校验必填项 (主题/剧情类型/剧情简介/角色) 后，跳转至 `/design` 进入剧情设计器。若字段未填全则提示用户。
 3.  **辅助功能模态框 (Modals)**:
     *   **连接设置 (Settings)**: 配置 GLM API Key, Base URL, Model。支持校验 URL 格式。
         *   **安全锁判定**: 当 Base URL 或 Model 不等于默认值时，触发“数据安全锁”（API Key 的变化不触发）。
@@ -150,11 +175,13 @@
     *   **显示一致性修复**: 进入设计器后会从当前剧情模板 (`MovieTemplate.meta/characters`) 回填这些字段到本地存储，避免显示到其他剧本或旧的首页向导输入。
     *   **设计页只读限制**: “剧情简介”“剧情类型”在设计页显示但禁止修改。
     *   **角色性别选择**: 角色性别必须通过下拉选择（男 / 女 / 其他），禁止自由输入。
-    *   **角色头像上传**: 角色阵容支持上传图片并在前端转为 base64 字符串保存（并尝试按角色名同步到模板角色的 `avatarPath`）。
+    *   **角色头像上传**: 角色阵容支持上传图片并在前端自动压缩至 300KB 以内，转为 base64 字符串保存。
+    *   **背景图片上传**: 支持上传游戏背景图片，并在前端自动压缩至 300KB 以内，转为 base64 字符串保存。
     *   **角色删除限制**: 若角色名称在任意节点的出场角色列表中被引用，则在设计页禁止删除。
 2.  **编辑剧情模板 (草稿机制)**:
     *   以 `mg_active_game_data` 为基底生成草稿并可编辑。
-    *   **保存**: 创建者模式且存在 `requestId` 时，会调用 `POST /template/update` 将草稿写回数据库，同时强制刷新本地 `mg_active_game_data`，确保刷新/再次进入设计不会回到旧数据；导入模式(`mg_play_entry=import`)下点击“保存/保存并游玩”会调用 `POST /import` 创建一条新的数据库记录并返回 `requestId`，成功后自动切换为创建者模式（随后保存走 `POST /template/update`），失败则回退为仅本地保存。
+    *   **保存**: 创建者模式且存在 `requestId` 时，会调用 `POST /template/update` 将草稿写回数据库，同时强制刷新本地 `mg_active_game_data`，确保刷新/再次进入设计不会回到旧数据；
+    *   **另存为新记录**: 导入模式(`mg_play_entry=import`)或从结局页进入的非创建者模式下，点击“保存/保存并游玩”会调用 `POST /import` 创建一条新的数据库记录并返回 `requestId`，成功后自动切换为创建者模式（随后保存走 `POST /template/update`），失败则回退为仅本地保存。
     *   **保存并游玩**: 执行与“保存”一致的持久化逻辑后，清理本次游玩状态并跳转 `/game`。
     *   **分享 (仅创建者可见)**: 当且仅当创建者模式且存在 `requestId` 时，工具栏显示“分享/取消分享”按钮；通过 `GET /records/meta/:requestId` 判断当前是否为创建者 (owner) 以及分享状态，通过 `POST /share` 切换分享状态；分享成功会弹出链接弹窗并将 `sharedRecordId` 写入 `mg_record_ids`（供历史记录页使用）；触发“数据安全锁”时禁用分享。
     *   **导入并覆盖**: 设计页提供“导入”按钮，支持粘贴/上传 JSON 覆盖当前草稿；创建者模式下支持“覆盖并保存”将内容写回数据库，并标记该记录 `template_source=import`。
@@ -392,14 +419,28 @@
     *   对 `SERVICE_BUSY` 会提示用户“服务繁忙”。
 
 ### 3.3.1 敏感词过滤 (Sensitive Content)
-*   **覆盖范围**: 后端对所有前端请求 payload 统一执行敏感词过滤（`/generate`、`/import`、`/template/update`、`/share` 等）。
-*   **处理方式**:
-    *   命中敏感词会被替换为 `*`（按字符逐位替换）。
-    *   单次请求中命中敏感内容数量 `> 3` 时，直接拒绝请求并返回错误码 `SENSITIVE_CONTENT`，错误信息为：`该剧情存在不当内容, 已拒绝服务`。
+*   **Prompt 接口豁免**:
+    *   所有 Prompt 生成接口 (`/expand/worldview/prompt`, `/expand/character/prompt`, `/generate/prompt`) **禁止**执行敏感词过滤，必须原样返回生成内容。
+*   **业务接口过滤规则**:
+    *   除 Prompt 接口外的所有业务接口（`/generate`、`/import`、`/template/update`、`/share`、`/expand/worldview`、`/expand/character`、`/records` 等）执行分级过滤。
+    *   **标题/主题 (Title/Theme)**: 若包含敏感词（即经过 `sanitize` 后内容发生变化，被替换为 `*`），必须返回 HTTP 400 错误，拒绝执行。
+    *   **其他字段 (Synopsis/Genre/Characters 等)**: 若包含敏感词，则将其**替换为 `*`** (脱敏) 后继续执行业务逻辑，**不**返回错误。
+    *   **格式符号保留**: 敏感词替换逻辑必须仅替换文本内容，**严禁删除**标点符号、换行符及其他格式字符，以避免破坏 LLM Prompt 结构。
     *   出于安全考虑，会跳过对 `apiKey` / `baseUrl` / `model` / `size` 等字段的过滤。
+    *   **LLM 返回内容豁免**: 严禁对 LLM 生成的内容（包括游戏 JSON、扩写结果、角色列表等）进行敏感词过滤或脱敏，必须原样返回给前端，确保用户体验和数据完整性。**系统日志中也应记录原始返回内容，以避免排查问题时产生误导**。
 *   **词库来源**:
+    *   默认词库：必须启用 `sensitive-rs` 默认词库（`dict/dict.txt`）。
+        *   可通过 `SENSITIVE_DEFAULT_DICT_PATH` 显式指定默认词库文件路径。
     *   环境变量 `SENSITIVE_WORDS`（支持逗号/换行分隔）。
     *   文件 `SENSITIVE_WORDS_PATH`（默认 `./sensitive_words.txt`，支持注释行 `#`）。
+
+### 3.8 日志记录规范 (Logging Standard)
+*   **全链路记录**: 所有调用 LLM 的接口（`/generate`, `/expand/worldview`, `/expand/character` 等）必须在数据库 `glm_requests` 表中记录完整的请求生命周期。
+*   **异常捕获**:
+    *   网络错误、超时、API 限流等必须记录为 `status='error'` 或 `status='failed'`。
+    *   **响应读取失败**: 即使是读取响应体 (`response.text()`) 失败，也必须捕获错误并更新日志状态，严禁直接返回错误而遗漏日志更新。
+*   **一致性**: `/expand/character` 等辅助接口的日志记录逻辑必须与主接口 `/generate` 保持高度一致。
+*   **角色生成限制**: 生成角色描述时，必须在 Prompt 中严格限制 `description` 字段字数不超过 100 字。
 
 ### 3.4 节点 ID 归一化 (Node ID Normalization)
 *   **目的**: 兼容旧数据/旧 Prompt 输出的 `node_`/`n_` 前缀，同时尽量收敛为“纯数字 key + start”的规范。
@@ -441,6 +482,8 @@
     *   `mg_ending`: 当前结局信息（进入结局页展示）。
     *   `mg_affinity_state`: 角色好感度状态（用于表情与结局页展示）。
     *   `mg_play_entry`(sessionStorage): 进入方式标记（owner/shared/import）。
+    *   `mg_shared_play_id`(sessionStorage): 当前游玩的共享记录 ID（仅 shared 模式）。
+*   **会话隔离**: `loadGameData`（开始新游戏/导入）时必须强制清理 `sessionStorage.mg_shared_play_id`，防止“重新开始”误跳转至旧的共享记录。
 
 ---
 
@@ -476,3 +519,57 @@
 **效果**:
 *   CSS 3D 变换实现卡片悬停效果。
 *   支持聚光灯 (Spotlight) 鼠标跟随效果。
+
+### 4.5 角色头像 (CharacterAvatar)
+**组件**: `front/src/components/ui/CharacterAvatar.vue`
+
+**效果**:
+*   使用 SVG 生成默认头像（根据角色名哈希值决定肤色和发型）。
+*   支持自定义头像图片 (`avatarPath`)。
+*   **圆形样式**: 组件内部使用 `rounded-full` 类确保头像为圆形；调用时传入的 `className` 也应包含 `rounded-full` 以确保移动端样式一致性。
+*   表情根据情绪 (`emotion`) 参数动态变化（happy/sad/angry/surprised/neutral）。
+*   支持性别差异（女性长发，男性短发）。
+
+### 4.6 游戏页面移动端适配 (Game Page Mobile Responsive)
+**组件**: `front/src/components/Game.vue`
+
+**移动端优化策略**:
+*   **布局对齐**: 移动端使用 `justify-center` 让内容垂直居中，而不是紧贴底部；桌面端保持 `md:justify-center`。
+*   **尺寸压缩**: 所有元素在移动端都进行了尺寸压缩，确保在小屏幕设备（如 iPhone SE 667px）上不出现滚动条。
+*   **渐进式响应**: 使用 Tailwind 响应式类 (`md:`, `lg:`) 实现移动端、平板、桌面的渐进式适配。
+
+**具体优化项**:
+1.  **顶部导航栏**: 移动端 `p-3` (12px)，桌面端 `md:p-6` (24px)
+2.  **角色头像**: 移动端 `w-24 h-24` (96px)，平板 `md:w-48 md:h-48` (192px)
+3.  **名称标签**: 移动端 `mt-2 px-3 text-[10px]`，桌面端 `md:mt-4 md:px-4 md:text-sm`
+4.  **头像间距**: 移动端 `mx-2` (8px)，桌面端 `md:mx-12` (48px)
+5.  **对话框卡片**: 移动端 `p-4` (16px)，平板 `md:p-8` (32px)，桌面 `lg:p-12` (48px)
+6.  **剧情文本容器**: 移动端 `min-h-[60px] mb-4`，桌面端 `md:min-h-[100px] md:mb-8`
+7.  **剧情文本字号**: 移动端 `text-base` (16px)，平板 `md:text-xl` (20px)，桌面 `lg:text-2xl` (24px)
+8.  **选项按钮**:
+    *   最小高度: 移动端 `56px`，桌面端 `72px`
+    *   Padding: 移动端 `12px 44px 12px 16px`，桌面端 `20px 56px 20px 24px`
+    *   字号: 移动端 `14px`，桌面端 `17px`
+9.  **选项间距**: 移动端 `gap-2` (8px)，桌面端 `md:gap-3` (12px)
+10. **底部间距**: 移动端 `pb-4` (16px)，桌面端 `md:pb-0`
+11. **主容器水平间距**: 移动端 `px-4`，桌面端 `md:px-0`
+
+**视觉保真度**:
+*   保持所有动画、过渡、悬停效果
+*   选项按钮最小高度 56px（超过 WCAG AAA 标准 44px），确保触摸友好性
+*   文本最小字号 14px，保持可读性
+*   紫色/粉色渐变主题不变
+
+### 4.7 剧情树可视化 (Tree Graph)
+**组件**: `front/src/components/Ending.vue`、`front/src/components/Designer.vue`
+
+**效果**:
+*   采用 SVG 实现的层次化节点树，展示剧情流程和结局关系。
+*   支持平移拖拽（鼠标/触摸）、滚轮缩放、自适应居中。
+*   **Pointer Capture**: 使用 `setPointerCapture`/`releasePointerCapture` 确保拖动流畅（特别是在移动端防止手指移出元素范围时丢失追踪）。
+*   **移动端适配**:
+    *   使用内联样式 `touch-action: none; user-select: none;` 禁用默认触摸行为。
+    *   `fitTree` 函数检测屏幕宽度（`< 768px`）并使用更小的缩放比例（0.6）和靠左对齐（x=20）。
+    *   容器响应式高度：移动端 `h-[640px]`，桌面端 `md:h-[720px]`。
+*   **节点交互**: 点击节点显示详细信息，高亮当前结局路径。
+*   **自动布局**: 采用 BFS 遍历构建层次结构，每层垂直居中。

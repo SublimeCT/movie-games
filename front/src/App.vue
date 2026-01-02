@@ -4,7 +4,7 @@
 </script>
 
 <template>
-  <div class="min-h-screen bg-neutral-950 text-neutral-100 font-sans selection:bg-purple-500/30">
+  <div class="min-h-[100dvh] w-full overflow-x-hidden bg-neutral-950 text-neutral-100 font-sans selection:bg-purple-500/30">
     <router-view />
   </div>
 </template>

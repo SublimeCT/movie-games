@@ -8,6 +8,7 @@ import {
   Import as ImportIcon,
   KeyRound,
   Link2,
+  Pencil,
   Settings as SettingsIcon,
   Sparkles,
   Wand2,
@@ -19,7 +20,9 @@ import {
   type CharacterInput as ApiCharacterInput,
   ApiError,
   expandCharacter,
+  expandCharacterPrompt,
   expandSynopsis,
+  expandSynopsisPrompt,
   generatePrompt,
   importGameTemplate,
 } from '../api';
@@ -36,7 +39,7 @@ type LocalCharacterInput = ApiCharacterInput & {
 
 const router = useRouter();
 // 使用 hook 获取游戏开始方法
-const { loadGameData } = useGameState();
+const { loadGameData, gameData } = useGameState();
 
 // Persisted State using useStorage
 /** The main theme or topic of the movie game */
@@ -359,6 +362,7 @@ const handleExpandSynopsis = async () => {
     const text = await expandSynopsis(
       theme.value,
       synopsis.value,
+      selectedGenres.value as string[],
       navigator.language,
       apiKey || undefined,
       baseUrl || undefined,
@@ -409,6 +413,7 @@ const handleExpandCharacter = async () => {
       theme.value,
       synopsis.value,
       toApiCharacters(characters.value),
+      selectedGenres.value as string[],
       navigator.language,
       apiKey || undefined,
       baseUrl || undefined,
@@ -435,6 +440,103 @@ const handleExpandCharacter = async () => {
   } finally {
     isExpandingChar.value = false;
   }
+};
+
+const handleExpandSynopsisPrompt = async () => {
+  if (!theme.value) {
+    error.value = '请先填写游戏主题';
+    return;
+  }
+  error.value = '';
+  isPromptLoading.value = true;
+  try {
+    const text = await expandSynopsisPrompt(theme.value, synopsis.value, selectedGenres.value as string[], navigator.language);
+    promptText.value = text;
+    isPromptOpen.value = true;
+  } catch (e: any) {
+    error.value = e.message || '获取提示词失败';
+  } finally {
+    isPromptLoading.value = false;
+  }
+};
+
+const handleExpandCharacterPrompt = async () => {
+  if (!theme.value) {
+    error.value = '请先填写游戏主题';
+    return;
+  }
+  error.value = '';
+  isPromptLoading.value = true;
+  try {
+    const text = await expandCharacterPrompt(theme.value, synopsis.value, toApiCharacters(characters.value), selectedGenres.value as string[], navigator.language);
+    promptText.value = text;
+    isPromptOpen.value = true;
+  } catch (e: any) {
+    error.value = e.message || '获取提示词失败';
+  } finally {
+    isPromptLoading.value = false;
+  }
+};
+
+const handleDesign = () => {
+  if (!theme.value.trim()) {
+    error.value = '请先填写游戏主题';
+    return;
+  }
+  if (selectedGenres.value.length === 0) {
+    error.value = '请至少选择一个剧情类型';
+    return;
+  }
+  if (!synopsis.value.trim()) {
+    error.value = '请先填写剧情简介';
+    return;
+  }
+  if (characters.value.length === 0) {
+    error.value = '请至少添加一个角色';
+    return;
+  }
+
+  const newTemplate: MovieTemplate = {
+    projectId: crypto.randomUUID(),
+    title: theme.value,
+    version: '1.0.0',
+    owner: 'User',
+    meta: {
+      logline: theme.value,
+      synopsis: synopsis.value,
+      genre: selectedGenres.value.join(','),
+      language: navigator.language,
+      targetRuntimeMinutes: 30,
+    },
+    nodes: {
+      start: {
+        id: 'start',
+        content: '故事开始...',
+        choices: [],
+        characters: [],
+      },
+    },
+    characters: {},
+    provenance: {
+      createdBy: 'User',
+      createdAt: new Date().toISOString(),
+    },
+  };
+
+  characters.value.forEach((c) => {
+    newTemplate.characters[c.name] = {
+      id: c.name,
+      name: c.name,
+      gender: c.gender,
+      role: c.description,
+      age: 0,
+      background: '',
+      avatarPath: c.avatarPath,
+    };
+  });
+
+  gameData.value = newTemplate;
+  router.push('/design');
 };
 
 /**
@@ -903,7 +1005,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="relative h-screen overflow-hidden w-full cursor-auto">
+  <div class="relative min-h-[100dvh] w-full cursor-auto">
     <FluidCursor />
     <CinematicLoader v-if="isLoading" />
 
@@ -1307,7 +1409,7 @@ onMounted(() => {
                     游戏主题
                 </label>
                 <div class="flex gap-2">
-                    <input v-model="theme" type="text" class="flex-1 bg-neutral-900/50 border border-neutral-700 rounded-xl px-3 py-2 md:px-4 md:py-3 text-base md:text-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none text-white placeholder-neutral-600 transition-all" placeholder="例如：赛博朋克背景下的硬汉侦探故事...">
+                    <input v-model="theme" type="text" maxlength="20" class="flex-1 bg-neutral-900/50 border border-neutral-700 rounded-xl px-3 py-2 md:px-4 md:py-3 text-base md:text-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none text-white placeholder-neutral-600 transition-all" placeholder="例如：赛博朋克背景下的硬汉侦探故事... (Max 20字)">
                     <button
                             ref="diceBtnRef"
                             @click="handleRandomTheme"
@@ -1465,6 +1567,7 @@ onMounted(() => {
                                 v-model="customGenre"
                                 @keydown.enter="addCustomGenre"
                                 placeholder="添加..."
+                                maxlength="20"
                                 class="px-2.5 md:px-4 py-1 md:py-2 rounded-lg text-sm md:text-base bg-neutral-900 border border-neutral-700 text-white focus:border-purple-500 outline-none w-16 md:w-24 focus:w-24 md:focus:w-32 transition-all"
                             />
                             <button @click="addCustomGenre" class="text-purple-400 hover:text-white text-lg md:text-xl px-1.5 md:px-2">+</button>
@@ -1492,6 +1595,14 @@ onMounted(() => {
                           <span class="tracking-wide uppercase sm:hidden">AI扩写</span>
                         </span>
                     </button>
+                    <button 
+                        @click="handleExpandSynopsisPrompt" 
+                        :disabled="isPromptLoading" 
+                        class="ml-2 relative inline-flex items-center justify-center p-2 rounded-full border border-white/10 bg-white/5 backdrop-blur-md text-white/50 hover:text-white hover:border-white/30 hover:bg-white/10 transition-all disabled:opacity-30 group" 
+                        title="获取提示词"
+                    >
+                        <Sparkles class="w-4 h-4" />
+                    </button>
                 </div>
                 <div class="relative">
                     <textarea
@@ -1499,6 +1610,7 @@ onMounted(() => {
                         :disabled="isExpandingSyn"
                         @blur="handleSynopsisBlur"
                         rows="6"
+                        maxlength="600"
                         :class="['w-full bg-neutral-900/50 border rounded-xl px-3 py-2 md:px-4 md:py-3 text-base md:text-lg outline-none text-white placeholder-neutral-600 transition-all resize-none leading-relaxed', isExpandingSyn ? 'border-purple-500/50 animate-pulse bg-purple-900/10' : 'border-neutral-700 focus:ring-2 focus:ring-purple-500 focus:border-transparent']"
                         placeholder="描述故事的核心冲突、世界背景和开场氛围..."
                     ></textarea>
@@ -1528,6 +1640,14 @@ onMounted(() => {
                               <span class="tracking-wide uppercase">AI生成</span>
                             </span>
                         </button>
+                        <button 
+                            @click="handleExpandCharacterPrompt" 
+                            :disabled="isPromptLoading" 
+                            class="relative inline-flex items-center justify-center p-2 rounded-full border border-white/10 bg-white/5 backdrop-blur-md text-white/50 hover:text-white hover:border-white/30 hover:bg-white/10 transition-all disabled:opacity-30 group" 
+                            title="获取提示词"
+                        >
+                            <Sparkles class="w-4 h-4" />
+                        </button>
                         <button @click="addCharacter" class="relative inline-flex items-center gap-1 md:gap-2 px-2 md:px-4 py-1 md:py-1.5 rounded-full border border-white/10 bg-black/30 backdrop-blur-md text-xs md:text-sm font-semibold text-white/70 hover:text-white hover:border-white/30 transition-all overflow-hidden whitespace-nowrap">
                           <span class="tracking-wide">+ 添加</span>
                         </button>
@@ -1537,15 +1657,15 @@ onMounted(() => {
                     <div :class="['grid gap-3 md:gap-4', isExpandingChar ? 'opacity-50 pointer-events-none blur-sm' : '']">
                         <div v-for="(char, idx) in characters" :key="idx" class="bg-neutral-900/50 p-3 md:p-5 rounded-xl border border-neutral-800 flex flex-col gap-3 md:gap-4 relative group/item hover:border-purple-500/30 transition-all">
                             <div class="flex flex-wrap md:flex-nowrap gap-2 md:gap-4 items-center w-full">
-                                <input v-model="char.name" placeholder="名字" class="w-full md:w-1/4 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 md:px-4 md:py-3 text-sm md:text-base text-white focus:border-purple-500 outline-none transition-colors">
-                                <input v-model="char.gender" placeholder="性别" class="w-20 md:w-28 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 md:px-4 md:py-3 text-sm md:text-base text-white focus:border-purple-500 outline-none transition-colors">
+                                <input v-model="char.name" placeholder="名字" maxlength="100" class="w-full md:w-1/4 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 md:px-4 md:py-3 text-sm md:text-base text-white focus:border-purple-500 outline-none transition-colors">
+                                <input v-model="char.gender" placeholder="性别" maxlength="10" class="w-20 md:w-28 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 md:px-4 md:py-3 text-sm md:text-base text-white focus:border-purple-500 outline-none transition-colors">
                                 <label class="flex-shrink-0 flex items-center justify-center gap-1.5 md:gap-2 text-xs md:text-sm text-neutral-400 cursor-pointer select-none bg-neutral-950 rounded-lg border border-neutral-800 hover:bg-neutral-900 transition-colors px-2 md:px-4 py-2 md:py-3 whitespace-nowrap">
                                     <input type="checkbox" v-model="char.isMain" class="accent-purple-500 w-3.5 h-3.5 md:w-4 md:h-4"> 主角
                                 </label>
                                 <div class="flex-1"></div>
                                 <button @click="removeCharacter(idx)" class="text-neutral-600 hover:text-red-500 p-1.5 md:p-2 transition-colors text-lg md:text-xl flex-shrink-0">×</button>
                             </div>
-                            <textarea v-model="char.description" placeholder="身份与性格描述" rows="1" class="char-desc-textarea w-full bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 md:px-4 md:py-3 text-sm md:text-base text-white focus:border-purple-500 outline-none transition-colors overflow-y-auto custom-scrollbar min-h-[2.5rem] max-h-[9rem] md:min-h-[3rem]"></textarea>
+                            <textarea v-model="char.description" placeholder="身份与性格描述" rows="1" maxlength="100" class="char-desc-textarea w-full bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 md:px-4 md:py-3 text-sm md:text-base text-white focus:border-purple-500 outline-none transition-colors overflow-y-auto custom-scrollbar min-h-[2.5rem] max-h-[9rem] md:min-h-[3rem]"></textarea>
                         </div>
                     </div>
                     <div v-if="isExpandingChar" class="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -1614,6 +1734,16 @@ onMounted(() => {
                         <Sparkles v-else class="w-3 h-3 md:w-4 md:h-4 text-purple-400 group-hover:text-purple-300 transition-colors flex-shrink-0" />
                         <span class="hidden md:inline tracking-wider uppercase">仅生成提示词</span>
                         <span class="md:hidden tracking-wider uppercase">提示词</span>
+                    </button>
+
+                    <button
+                        @click="handleDesign"
+                        :disabled="securityLocked"
+                        class="relative inline-flex items-center justify-center gap-1.5 px-2 md:px-4 py-3 md:py-4 rounded-xl border border-white/10 bg-white/5 backdrop-blur-md text-xs md:text-sm font-bold text-white/50 hover:text-white hover:border-white/30 hover:bg-white/10 transition-all disabled:opacity-30 group overflow-hidden whitespace-nowrap flex-shrink-0"
+                    >
+                        <Pencil class="w-3 h-3 md:w-4 md:h-4 text-cyan-400 group-hover:text-cyan-300 transition-colors flex-shrink-0" />
+                        <span class="hidden md:inline tracking-wider uppercase">设计</span>
+                        <span class="md:hidden tracking-wider uppercase">设计</span>
                     </button>
                 </div>
             </div>

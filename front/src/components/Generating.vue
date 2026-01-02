@@ -9,7 +9,7 @@ import { FluidCursor } from './ui/fluid-cursor';
 const router = useRouter();
 
 // 使用 hook 获取游戏开始方法
-const { handleGameStart } = useGameState();
+const { handleGameStart, clearGameData } = useGameState();
 
 const isLoading = ref(true);
 const error = ref('');
@@ -46,6 +46,9 @@ const handleGoBack = () => {
 };
 
 onMounted(async () => {
+  // Clear any existing game data to prevent "stale data" issue if generation fails
+  clearGameData();
+
   // Read parameters from localStorage
   const paramsStr = localStorage.getItem('mg_generate_params');
   if (!paramsStr) {

@@ -684,12 +684,12 @@ const handleAvatarClick = (agent: Character) => {
         
         <div class="relative z-10">
             <div class="absolute inset-0 bg-purple-500/30 blur-2xl rounded-full scale-110"></div>
-            <CharacterAvatar 
-            :name="selectedAgent.name" 
-            :gender="normalizeGenderTag(selectedAgent.gender)" 
-            :emotion="getEmotion(selectedAgent)" 
+            <CharacterAvatar
+            :name="selectedAgent.name"
+            :gender="normalizeGenderTag(selectedAgent.gender)"
+            :emotion="getEmotion(selectedAgent)"
             :avatarPath="selectedAgent.avatarPath"
-            className="w-32 h-32 shadow-2xl relative z-10" 
+            className="w-32 h-32 rounded-full shadow-2xl relative z-10"
             />
         </div>
         
@@ -733,7 +733,7 @@ const handleAvatarClick = (agent: Character) => {
     </div>
   </Transition>
 
-  <div class="h-screen w-full bg-black text-white overflow-hidden relative font-sans">
+  <div class="min-h-[100dvh] w-full bg-black text-white relative font-sans">
       <!-- Background Layer -->
       <div class="absolute inset-0 z-0 bg-black" :style="backgroundBaseStyle"></div>
       <div class="absolute inset-0 z-0 pointer-events-none" :style="backgroundMaskStyle"></div>
@@ -781,7 +781,7 @@ const handleAvatarClick = (agent: Character) => {
       <div class="absolute inset-0 z-0 opacity-[0.14] mix-blend-overlay pointer-events-none animate-[grain_8s_steps(10)_infinite] bg-[url('data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%22300%22%20height=%22300%22%3E%3Cfilter%20id=%22n%22%3E%3CfeTurbulence%20type=%22fractalNoise%22%20baseFrequency=%220.8%22%20numOctaves=%223%22%20stitchTiles=%22stitch%22/%3E%3C/filter%3E%3Crect%20width=%22300%22%20height=%22300%22%20filter=%22url(%23n)%22%20opacity=%220.45%22/%3E%3C/svg%3E')]"></div>
 
       <!-- Top Bar -->
-      <header class="absolute top-0 left-0 w-full p-6 flex justify-between items-center z-50 pointer-events-none">
+      <header class="absolute top-0 left-0 w-full p-3 md:p-6 flex justify-between items-center z-50 pointer-events-none">
           <div class="pointer-events-auto">
               <h2 class="text-white/50 text-xs tracking-[0.2em] uppercase font-bold backdrop-blur-sm px-3 py-1 rounded-full border border-white/10">{{ gameData?.title || 'Movie Game' }}</h2>
           </div>
@@ -804,10 +804,10 @@ const handleAvatarClick = (agent: Character) => {
       </header>
   
       <!-- Main Stage -->
-      <main class="relative z-10 h-full flex flex-col items-center justify-end md:justify-center pb-0 md:pb-20">
+      <main class="relative z-10 min-h-[100dvh] flex flex-col pt-20 pb-20 md:py-20 px-4 md:px-0">
           
           <!-- Characters Stage -->
-          <div class="flex-1 w-full flex items-center justify-center relative z-30">
+          <div class="w-full flex-grow flex items-center justify-center relative z-30 mb-6 md:mb-10 min-h-[200px]">
               <TransitionGroup 
                 tag="div"
                 class="flex items-end justify-center w-full"
@@ -818,24 +818,24 @@ const handleAvatarClick = (agent: Character) => {
                 leave-from-class="opacity-100 scale-100"
                 leave-to-class="opacity-0 scale-90"
               >
-                  <div 
-                    v-for="agent in currentAgents" 
-                    :key="agent.id" 
-                    class="flex flex-col items-center mx-4 md:mx-12 group relative cursor-pointer"
+                  <div
+                    v-for="agent in currentAgents"
+                    :key="agent.id"
+                    class="flex flex-col items-center mx-2 md:mx-12 group relative cursor-pointer"
                     @click="handleAvatarClick(agent)"
                   >
                        <div class="relative">
                            <div class="absolute inset-0 bg-purple-500/20 blur-xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
-                           <CharacterAvatar 
-                                :name="agent.name" 
-                                :gender="normalizeGenderTag(agent.gender)" 
-                                :emotion="getEmotion(agent)" 
+                           <CharacterAvatar
+                                :name="agent.name"
+                                :gender="normalizeGenderTag(agent.gender)"
+                                :emotion="getEmotion(agent)"
                                 :avatarPath="agent.avatarPath"
-                                className="w-32 h-32 md:w-48 md:h-48 drop-shadow-2xl relative z-10 transform transition-transform duration-500 hover:scale-110" 
+                                className="w-24 h-24 md:w-48 md:h-48 rounded-full drop-shadow-2xl relative z-10 transform transition-transform duration-500 hover:scale-110"
                            />
                        </div>
-                       <div class="mt-4 px-4 py-1 bg-black/60 backdrop-blur-md border border-white/10 rounded-full">
-                           <span class="text-xs md:text-sm font-bold tracking-widest text-white/90 uppercase">{{ agent.name }}</span>
+                       <div class="mt-2 md:mt-4 px-3 md:px-4 py-1 bg-black/60 backdrop-blur-md border border-white/10 rounded-full">
+                           <span class="text-[10px] md:text-sm font-bold tracking-widest text-white/90 uppercase">{{ agent.name }}</span>
                        </div>
 
                        <div class="absolute top-0 left-1/2 -translate-x-1/2 translate-y-[calc(-100%-12px)] opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200">
@@ -862,15 +862,16 @@ const handleAvatarClick = (agent: Character) => {
           </div>
           
           <!-- Dialogue & Choice Box -->
-          <div class="w-full max-w-4xl px-4 pb-8 md:pb-0 z-20">
-            <ThreeDCard>
-              <div
-                ref="spotlightCardEl"
-                class="mg-spotlight relative overflow-hidden rounded-3xl border border-white/10 bg-black/60 backdrop-blur-3xl shadow-[0_0_50px_rgba(0,0,0,0.5)] ring-1 ring-white/5 p-8 md:p-12 transition-all duration-500 hover:shadow-[0_0_80px_rgba(168,85,247,0.15)] hover:border-white/20"
-                @pointermove="handleSpotlightMove"
-                @pointerenter="handleSpotlightEnter"
-                @pointerleave="handleSpotlightLeave"
-              >
+          <div class="w-full flex flex-col items-center z-20 mt-auto">
+            <div class="w-full max-w-4xl px-4 pb-4 md:pb-0">
+              <ThreeDCard>
+                <div
+                  ref="spotlightCardEl"
+                  class="mg-spotlight relative overflow-hidden rounded-3xl border border-white/10 bg-black/60 backdrop-blur-3xl shadow-[0_0_50px_rgba(0,0,0,0.5)] ring-1 ring-white/5 p-4 md:p-8 lg:p-12 transition-all duration-500 hover:shadow-[0_0_80px_rgba(168,85,247,0.15)] hover:border-white/20"
+                  @pointermove="handleSpotlightMove"
+                  @pointerenter="handleSpotlightEnter"
+                  @pointerleave="handleSpotlightLeave"
+                >
                   <!-- Spotlight effect layer -->
                   <div 
                     class="pointer-events-none absolute -inset-px opacity-0 transition duration-300"
@@ -881,7 +882,7 @@ const handleAvatarClick = (agent: Character) => {
                   <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-purple-500/50 to-transparent"></div>
 
                   <!-- Narrative Text -->
-                  <div class="min-h-[100px] mb-8 flex items-center justify-center">
+                  <div class="min-h-[60px] md:min-h-[100px] mb-4 md:mb-8 flex items-center justify-center">
                       <Transition 
                         mode="out-in"
                         enter-active-class="transition-all duration-500 ease-out delay-100"
@@ -891,7 +892,7 @@ const handleAvatarClick = (agent: Character) => {
                         leave-from-class="opacity-100"
                         leave-to-class="opacity-0 -translate-y-2"
                       >
-                          <p :key="currentNodeId" class="text-lg md:text-2xl leading-relaxed font-light text-neutral-100 text-center drop-shadow-md">
+                          <p :key="currentNodeId" class="text-base md:text-xl lg:text-2xl leading-relaxed font-light text-neutral-100 text-center drop-shadow-md">
                               {{ (typeof currentNode?.content === 'string' ? currentNode.content : (currentNode?.content as any)?.text) || (gameData ? '...' : '没有可用的游戏数据，请返回首页重新生成或导入。') }}
                           </p>
                       </Transition>
@@ -902,7 +903,7 @@ const handleAvatarClick = (agent: Character) => {
                   </div>
 
                   <!-- Choices -->
-                  <div class="flex flex-col gap-3">
+                  <div class="flex flex-col gap-2 md:gap-3">
                        <TransitionGroup
                          tag="div"
                          name="choice"
@@ -965,7 +966,8 @@ const handleAvatarClick = (agent: Character) => {
                      {{ currentNodeId }}
                    </div>
               </div>
-            </ThreeDCard>
+              </ThreeDCard>
+            </div>
           </div>
       </main>
   </div>
@@ -1417,12 +1419,12 @@ const handleAvatarClick = (agent: Character) => {
 /* 响应式调整 */
 @media (max-width: 768px) {
   .cinematic-choice {
-    min-height: 64px;
-    padding: 16px 48px 16px 20px;
+    min-height: 56px;
+    padding: 12px 44px 12px 16px;
   }
 
   .text-gradient {
-    font-size: 15px;
+    font-size: 14px;
   }
 }
 

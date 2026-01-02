@@ -1,4 +1,4 @@
-use crate::api_types::GenerateRequest;
+use crate::api_types::{ExpandCharacterRequest, ExpandWorldviewRequest, GenerateRequest};
 
 pub(crate) fn clean_json(s: &str) -> String {
     let s = s.trim();
@@ -219,4 +219,135 @@ interface Ending {
 "#,
         full_topic, language_label, protagonist_name, characters_json, types_def
     )
+}
+
+pub(crate) fn construct_expand_worldview_prompt(req: &ExpandWorldviewRequest) -> String {
+    let language = req.language.as_deref().unwrap_or("zh-CN");
+    if let Some(synopsis) = req.synopsis.as_ref().filter(|s| !s.trim().is_empty()) {
+        format!(
+            "你是一名资深电影编剧。
+请根据以下故事大纲，将其扩写为一个更加丰富、细节饱满、逻辑严密的电影故事梗概（Synopsis）。
+
+原大纲：
+{}
+
+要求：
+1. 保持原有的核心冲突和人物关系。
+2. 增加环境描写、情感细节和情节转折。
+3. 明确故事的起承转合（开端、发展、高潮、结局）。
+4. 篇幅在 300-500 字之间。
+5. 语言风格要符合【{}】题材的调性。
+
+# 语言要求
+输出语言：{}。
+
+请直接输出扩写后的文本，不要包含任何前言后语。",
+            synopsis, req.theme, language
+        )
+    } else {
+        format!(
+            "你是一名资深电影编剧。
+请为一个【{}】题材的电影，创作一个精彩、引人入胜的电影故事梗概（Synopsis）。
+
+要求：
+1. 包含核心冲突、主要人物和关键情节。
+2. 明确故事的起承转合（开端、发展、高潮、结局）。
+3. 篇幅在 300-500 字之间。
+
+# 语言要求
+输出语言：{}。
+
+请直接输出创作的文本，不要包含任何前言后语。",
+            req.theme, language
+        )
+    }
+}
+
+pub(crate) fn construct_expand_character_prompt(req: &ExpandCharacterRequest) -> String {
+    let language = req.language.as_deref().unwrap_or("zh-CN");
+    // Use worldview as the synopsis source since frontend sends it in 'worldview' field
+    let synopsis_content = if !req.worldview.is_empty() {
+        Some(req.worldview.as_str())
+    } else {
+        req.synopsis.as_deref()
+    };
+
+    if let Some(synopsis) = synopsis_content {
+        format!(
+            "你是一名资深电影编剧。
+
+请为一部【{}】电影，基于以下故事大纲，生成一个完整、立体、真实可信的角色设定。
+
+故事大纲：
+{}
+
+要求：
+1. 数量要求：至少生成 3 个主要角色（根据剧情复杂度可适当增加）。
+2. 角色基本信息（姓名、年龄、性别、职业、社会阶层）
+   - 性别字段是必填项，禁止为空！必须明确为 '男'、'女' 或 '其他'。
+3. 外貌特征（用于电影镜头表现）
+4. 性格特质（优点、缺点、矛盾点）
+5. 角色的“表层目标”（他/她现在想要什么）
+6. 角色的“深层需求”（内心真正缺失的东西）
+7. 角色的创伤或过去经历（推动性格形成）
+8. 角色在故事中的功能（主角 / 反派 / 配角 / 镜像角色）
+9. 角色可能经历的转变弧线（开场 → 结尾）
+10. 一句能概括该角色的核心主题句
+
+请避免模板化、脸谱化角色，强调现实逻辑与情感动机。
+
+# 语言要求
+输出语言：{}。
+
+# 输出格式
+请输出为 JSON 数组，格式如下：
+[
+  {{
+    \"name\": \"角色姓名\",
+    \"gender\": \"男\", // 严禁为空！必须是 \"男\" 或 \"女\" 或 \"其他\"
+    \"isMain\": true/false,
+    \"description\": \"这里包含上述所有详细设定（外貌、性格、目标、创伤等），请组织成一段通顺的文字或使用换行符分隔。注意：字数绝对不能超过 100 字。\"
+  }}
+]
+注意：必须严格遵守 JSON 格式，不要包含 Markdown 代码块标记。description 字段字数绝对不能超过 100 字。",
+            req.theme, synopsis, language
+        )
+    } else {
+        format!(
+            "你是一名资深电影编剧。
+
+请为一部【{}】电影，生成一个完整、立体、真实可信的角色设定。
+
+要求：
+1. 数量要求：至少生成 3 个主要角色（根据剧情复杂度可适当增加）。
+2. 角色基本信息（姓名、年龄、性别、职业、社会阶层）
+   - 性别字段是必填项，禁止为空！必须明确为 '男'、'女' 或 '其他'。
+3. 外貌特征（用于电影镜头表现）
+4. 性格特质（优点、缺点、矛盾点）
+5. 角色的“表层目标”（他/她现在想要什么）
+6. 角色的“深层需求”（内心真正缺失的东西）
+7. 角色的创伤或过去经历（推动性格形成）
+8. 角色在故事中的功能（主角 / 反派 / 配角 / 镜像角色）
+9. 角色可能经历的转变弧线（开场 → 结尾）
+10. 一句能概括该角色的核心主题句
+
+请避免模板化、脸谱化角色，强调现实逻辑与情感动机。
+
+# 语言要求
+输出语言：{}。
+
+# 输出格式
+请输出为 JSON 数组，格式如下：
+[
+  {{
+    \"name\": \"角色姓名\",
+    \"gender\": \"男\", // 严禁为空！必须是 \"男\" 或 \"女\" 或 \"其他\"
+    \"isMain\": true/false,
+    \"description\": \"这里包含上述所有详细设定（外貌、性格、目标、创伤等），请组织成一段通顺的文字或使用换行符分隔。注意：字数绝对不能超过 100 字。\"
+  }}
+]
+注意：必须严格遵守 JSON 格式，不要包含 Markdown 代码块标记。description 字段字数绝对不能超过 100 字。",
+            req.theme, language
+        )
+    }
 }

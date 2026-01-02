@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { Background } from '@vue-flow/background';
+import { Controls } from '@vue-flow/controls';
+import { VueFlow } from '@vue-flow/core';
+import { MiniMap } from '@vue-flow/minimap';
 import { useStorage } from '@vueuse/core';
 import {
   ArrowLeft,
@@ -28,12 +32,17 @@ import {
   updateGameTemplate,
 } from '../api';
 import { useGameState } from '../hooks/useGameState';
-import { compressImage } from '../utils/image';
 import type { Choice, Ending, MovieTemplate, StoryNode } from '../types/movie';
+import { compressImage } from '../utils/image';
+import CustomNode from './CustomNode.vue';
 import CharacterAvatar from './ui/CharacterAvatar.vue';
 import CinematicLoader from './ui/CinematicLoader.vue';
 import ImagePreview from './ui/ImagePreview.vue';
 import { WavyBackground } from './ui/wavy-background';
+import '@vue-flow/core/dist/style.css';
+import '@vue-flow/core/dist/theme-default.css';
+import '@vue-flow/controls/dist/style.css';
+import '@vue-flow/minimap/dist/style.css';
 
 type PlayEntry = 'owner' | 'shared' | 'import';
 
@@ -700,15 +709,6 @@ const downloadJson = () => {
   URL.revokeObjectURL(url);
 };
 
-const fileToDataUrl = (file: File) => {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(new Error('read_failed'));
-    reader.readAsDataURL(file);
-  });
-};
-
 const syncAvatarToDraftByName = (
   nameRaw: string,
   avatarPath: string | undefined,
@@ -954,12 +954,13 @@ const treeGraph = computed(() => {
     for (const c of n.choices || []) {
       const to = (c.nextNodeId || '').trim();
       if (!to) continue;
-      if (to === 'END') continue;
+      // if (to === 'END') continue; // Allow END nodes to be visualized
       if (seenTargets.has(to)) continue;
       seenTargets.add(to);
 
       if (nodes[to]) list.push({ to, label: c.text });
       else if (knownEndingKeys.has(to)) list.push({ to, label: c.text });
+      else if (to === 'END') list.push({ to, label: c.text });
     }
     children.set(id, list);
   }
@@ -1178,19 +1179,6 @@ const orphanNodeReasonMap = computed(() => {
 });
 
 const selectedId = ref<string>('');
-const hoveredId = ref<string>('');
-const treeWrapEl = ref<HTMLDivElement | null>(null);
-const pan = ref({ x: 0, y: 0 });
-const zoom = ref(0.9);
-const dragging = ref<null | {
-  x: number;
-  y: number;
-  panX: number;
-  panY: number;
-}>(null);
-const isDragging = ref(false);
-const dragStart = ref({ x: 0, y: 0 });
-
 const highlighted = computed(() => {
   const focus = selectedId.value;
   const parent = treeGraph.value.parent;
@@ -1206,45 +1194,61 @@ const highlighted = computed(() => {
   return out;
 });
 
-const clamp = (v: number, min: number, max: number) =>
-  Math.max(min, Math.min(max, v));
+const vueFlowNodes = computed(() => {
+  return treeGraph.value.nodes.map((n) => ({
+    id: n.id,
+    position: { x: n.x, y: n.y },
+    data: {
+      label: n.label,
+      kind: n.kind,
+      highlighted: highlighted.value.has(n.id),
+    },
+    type: 'custom',
+    style: { width: `${n.w}px`, height: `${n.h}px` },
+  }));
+});
 
-const resetView = () => {
-  zoom.value = 0.9;
-  pan.value = { x: 0, y: 0 };
+const vueFlowEdges = computed(() => {
+  return treeGraph.value.edges.map((e) => {
+    const isHighlighted =
+      highlighted.value.has(e.from) && highlighted.value.has(e.to);
+    return {
+      id: `${e.from}-${e.to}`,
+      source: e.from,
+      target: e.to,
+      animated: isHighlighted,
+      style: isHighlighted
+        ? { stroke: '#d946ef', strokeWidth: 3 }
+        : { stroke: '#9333ea', strokeOpacity: 0.3 },
+      markerEnd: 'arrowclosed',
+    };
+  });
+});
+
+let vueFlowInstance: any = null;
+const onVueFlowInit = (instance: any) => {
+  vueFlowInstance = instance;
+  instance.fitView();
+};
+
+const onVueFlowNodeClick = (event: { node: { id: string } }) => {
+  onNodeClick(event.node.id);
+};
+
+const onPaneClick = () => {
+  selectedId.value = '';
 };
 
 const fitTree = async () => {
   await nextTick();
-  const el = treeWrapEl.value;
-  if (!el) return;
-  const rect = el.getBoundingClientRect();
-  const view = treeGraph.value.view;
+  vueFlowInstance?.fitView();
+};
 
-  const availableW = rect.width - 40;
-  const availableH = rect.height - 40;
+const clamp = (v: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, v));
 
-  let scale = Math.min(availableW / view.w, availableH / view.h);
-
-  // 移动端检测
-  const isMobile = rect.width < 768;
-
-  if (scale < 0.6) {
-    scale = isMobile ? 0.6 : 0.8; // 移动端使用更小的缩放
-    zoom.value = scale;
-    // 移动端靠左显示，垂直居中
-    pan.value = {
-      x: isMobile ? 20 : 40,
-      y: Math.max(20, (rect.height - view.h * scale) / 2),
-    };
-  } else {
-    scale = clamp(scale, 0.5, 1.5);
-    zoom.value = scale;
-    pan.value = {
-      x: (rect.width - view.w * scale) / 2,
-      y: (rect.height - view.h * scale) / 2,
-    };
-  }
+const resetView = () => {
+  vueFlowInstance?.fitView();
 };
 
 watch(
@@ -1256,104 +1260,9 @@ watch(
   { immediate: true },
 );
 
-const onWheel = (e: WheelEvent) => {
-  e.preventDefault();
-  const el = treeWrapEl.value;
-  if (!el) return;
-  const rect = el.getBoundingClientRect();
-  const mx = e.clientX - rect.left;
-  const my = e.clientY - rect.top;
-
-  const delta = -e.deltaY;
-  const factor = delta > 0 ? 1.08 : 0.92;
-  const prevZoom = zoom.value;
-  const nextZoom = clamp(prevZoom * factor, 0.1, 4.0);
-
-  const wx = (mx - pan.value.x) / prevZoom;
-  const wy = (my - pan.value.y) / prevZoom;
-  zoom.value = nextZoom;
-  pan.value = {
-    x: mx - wx * nextZoom,
-    y: my - wy * nextZoom,
-  };
-};
-
-const onPointerDown = (e: PointerEvent) => {
-  dragStart.value = { x: e.clientX, y: e.clientY };
-  isDragging.value = false;
-  
-  // Do NOT capture pointer immediately.
-  // Wait until movement threshold is reached (in onPointerMove) to decide if it's a drag.
-  // This allows the browser to handle "click" naturally on children if no drag occurs.
-
-  dragging.value = {
-    x: e.clientX,
-    y: e.clientY,
-    panX: pan.value.x,
-    panY: pan.value.y,
-  };
-};
-
-const onPointerMove = (e: PointerEvent) => {
-  if (!dragging.value) return;
-
-  const dx = e.clientX - dragging.value.x;
-  const dy = e.clientY - dragging.value.y;
-
-  if (
-    !isDragging.value &&
-    (Math.abs(e.clientX - dragStart.value.x) > 5 ||
-      Math.abs(e.clientY - dragStart.value.y) > 5)
-  ) {
-    isDragging.value = true;
-    // Now we know it's a drag, capture the pointer to track movement even outside the element
-    (e.currentTarget as HTMLElement)?.setPointerCapture(e.pointerId);
-  }
-
-  if (isDragging.value) {
-    pan.value = { x: dragging.value.panX + dx, y: dragging.value.panY + dy };
-  }
-};
-
-const onPointerUp = (e: PointerEvent) => {
-  if (isDragging.value) {
-    // If we were dragging, release capture
-    (e.currentTarget as HTMLElement)?.releasePointerCapture(e.pointerId);
-    
-    // Prevent any subsequent click from firing (though capture usually handles this)
-    // We can use a short timeout to clear the dragging flag, 
-    // so that any click event firing immediately after this knows it was a drag.
-    setTimeout(() => {
-      isDragging.value = false;
-    }, 50);
-  } else {
-    // If we were NOT dragging, we didn't capture.
-    // The browser will fire a 'click' event on the original target (the Node) automatically.
-    // So we don't need to do anything here.
-    isDragging.value = false;
-  }
-  
-  dragging.value = null;
-};
-
 const onNodeClick = (id: string) => {
-  if (isDragging.value) return;
   selectedId.value = id;
 };
-
-const onGlobalPointerUp = () => {
-  dragging.value = null;
-};
-
-onMounted(() => {
-  window.addEventListener('pointerup', onGlobalPointerUp);
-  window.addEventListener('pointercancel', onGlobalPointerUp);
-});
-
-onUnmounted(() => {
-  window.removeEventListener('pointerup', onGlobalPointerUp);
-  window.removeEventListener('pointercancel', onGlobalPointerUp);
-});
 
 /**
  * 基于模板角色表构建 id → name 的映射，用于兼容历史数据里使用 id 存储角色的情况。
@@ -2602,94 +2511,25 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                   </div>
 
                   <div
-                    ref="treeWrapEl"
                     class="mt-4 rounded-xl border border-white/10 bg-black/55 overflow-hidden h-[640px] md:h-[720px] relative"
-                    style="touch-action: none; user-select: none;"
-                    @wheel="onWheel"
-                    @pointerdown="onPointerDown"
-                    @pointermove="onPointerMove"
-                    @pointerup="onPointerUp"
-                    @pointercancel="onPointerUp"
+                    style="touch-action: none;"
                   >
-                    <!-- Transform Container -->
-                    <div
-                      class="absolute top-0 left-0 w-full h-full origin-top-left will-change-transform"
-                      :style="{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }"
+                    <VueFlow
+                      :nodes="vueFlowNodes"
+                      :edges="vueFlowEdges"
+                      :default-viewport="{ zoom: 0.9 }"
+                      @node-click="onVueFlowNodeClick"
+                      @pane-click="onPaneClick"
+                      @init="onVueFlowInit"
+                      fit-view-on-init
                     >
-                      <!-- Edges Layer -->
-                      <svg class="absolute inset-0 overflow-visible pointer-events-none z-0" width="1" height="1">
-                        <defs>
-                          <linearGradient id="edge-gradient" gradientUnits="userSpaceOnUse" x1="0%" y1="0%" x2="100%" y2="0%">
-                            <stop offset="0%" stop-color="#9333ea" stop-opacity="0.3" />
-                            <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.3" />
-                          </linearGradient>
-                          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
-                            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" opacity="0.5" />
-                          </marker>
-                        </defs>
-
-                        <g>
-                          <path
-                            v-for="(e, idx) in treeGraph.edges"
-                            :key="idx"
-                            :d="(() => {
-                              const a = treeGraph.nodes.find(n => n.id === e.from);
-                              const b = treeGraph.nodes.find(n => n.id === e.to);
-                              if (!a || !b) return '';
-                              const ax = a.x + a.w;
-                              const ay = a.y + a.h / 2;
-                              const bx = b.x;
-                              const by = b.y + b.h / 2;
-                              const mx = (ax + bx) / 2;
-                              return `M ${ax} ${ay} C ${mx} ${ay}, ${mx} ${by}, ${bx} ${by}`;
-                            })()"
-                            :stroke="(highlighted.has(e.from) && highlighted.has(e.to)) ? '#d946ef' : 'url(#edge-gradient)'"
-                            :stroke-width="(highlighted.has(e.from) && highlighted.has(e.to)) ? (3 / zoom) : (1.5 / zoom)"
-                            :stroke-opacity="(highlighted.has(e.from) && highlighted.has(e.to)) ? 0.8 : 0.3"
-                            fill="none"
-                            class="transition-all duration-500"
-                            marker-end="url(#arrowhead)"
-                          />
-                        </g>
-                      </svg>
-
-                      <!-- Nodes Layer (HTML) -->
-                      <div
-                        v-for="n in treeGraph.nodes"
-                        :key="n.id"
-                        class="absolute z-10"
-                        :style="{
-                          left: `${n.x}px`,
-                          top: `${n.y}px`,
-                          width: `${n.w}px`,
-                          height: `${n.h}px`
-                        }"
-                      >
-                        <div
-                          data-node
-                          :data-node-id="n.id"
-                          @click.stop="onNodeClick(n.id)"
-                          @pointerenter="hoveredId = n.id"
-                          @pointerleave="hoveredId = ''"
-                          :class="[
-                            'w-full h-full rounded-xl border backdrop-blur-md flex flex-col justify-center px-4 py-2 transition-all duration-300 cursor-pointer shadow-lg group hover:scale-105',
-                            n.kind === 'ending'
-                              ? 'bg-cyan-900/20 border-cyan-500/30 hover:border-cyan-400'
-                              : 'bg-neutral-900/40 border-purple-500/20 hover:border-purple-400',
-                            highlighted.has(n.id) ? 'ring-2 ring-purple-500/50 shadow-[0_0_15px_rgba(168,85,247,0.3)]' : ''
-                          ]"
-                        >
-                          <div class="flex items-center justify-between mb-1 pointer-events-none">
-                            <span :class="['text-[10px] font-mono uppercase tracking-wider', n.kind === 'ending' ? 'text-cyan-400' : 'text-purple-400']">
-                              {{ n.kind === 'ending' ? 'ENDING' : 'NODE' }}
-                            </span>
-                            <div v-if="highlighted.has(n.id)" class="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shadow-[0_0_5px_rgba(74,222,128,0.8)]"></div>
-                          </div>
-                          <div class="text-xs font-bold text-white/90 truncate font-mono pointer-events-none">{{ n.label }}</div>
-                          <div class="absolute inset-0 rounded-xl bg-gradient-to-r from-white/0 via-white/5 to-white/0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"></div>
-                        </div>
-                      </div>
-                    </div>
+                      <Background />
+                      <Controls />
+                      <MiniMap />
+                      <template #node-custom="props">
+                        <CustomNode v-bind="props" />
+                      </template>
+                    </VueFlow>
 
                     <div
                       v-if="selectedNodeInfo"
@@ -3362,3 +3202,58 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
 
   </div>
 </template>
+
+<style>
+/* Vue Flow Dark Theme Overrides */
+.vue-flow__minimap {
+  background-color: #1a1a1a !important;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.vue-flow__minimap-mask {
+  fill: rgba(0, 0, 0, 0.6) !important;
+}
+
+.vue-flow__minimap-node {
+  fill: #333 !important;
+  stroke: #555 !important;
+}
+
+.vue-flow__minimap-node.selected {
+  fill: #9333ea !important;
+  stroke: #d8b4fe !important;
+}
+
+.vue-flow__controls {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.5rem;
+  overflow: hidden;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.vue-flow__controls-button {
+  background-color: #262626 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  fill: #e5e5e5 !important;
+  border-radius: 0 !important;
+  transition: background-color 0.2s;
+}
+
+.vue-flow__controls-button:last-child {
+  border-bottom: none !important;
+}
+
+.vue-flow__controls-button:hover {
+  background-color: #404040 !important;
+}
+
+.vue-flow__controls-button svg {
+  fill: currentColor !important;
+}
+
+/* 确保节点内容可以正常交互 */
+.custom-node {
+  pointer-events: all;
+}
+</style>

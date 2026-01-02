@@ -1,4 +1,3 @@
-
 /**
  * Compress an image file to a base64 string under a specified size limit (in bytes).
  * Uses a canvas to resize/compress if necessary.
@@ -12,8 +11,8 @@
 export const compressImage = (
   file: File,
   maxSize: number = 300 * 1024,
-  maxWidth: number = 1024,
-  initialQuality: number = 0.8
+  maxWidth = 1024,
+  initialQuality = 0.8,
 ): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -49,7 +48,7 @@ export const compressImage = (
           // but for game backgrounds/avatars, JPEG is usually fine or we accept loss of transparency for size.
           // However, to be safe, let's stick to jpeg for aggressive compression.
           const dataUrl = canvas.toDataURL('image/jpeg', quality);
-          
+
           // Check size (base64 string length * 0.75 is approx binary size)
           // Or just check string length against limit * 1.33
           // The user specified "images(base64) < 300k", usually meaning the string length or the file size.
@@ -57,12 +56,12 @@ export const compressImage = (
           // If they mean base64 string length, then we compare length directly.
           // The backend check I wrote uses `bg.len() > 400_000`, which implies ~300KB binary.
           // Let's assume the user means "resulting file size should be < 300KB", so base64 len < 400,000.
-          
+
           if (dataUrl.length < maxSize * 1.37 || quality < 0.1) {
-             resolve(dataUrl);
+            resolve(dataUrl);
           } else {
-             // Reduce quality and try again
-             attemptCompression(quality - 0.1);
+            // Reduce quality and try again
+            attemptCompression(quality - 0.1);
           }
         };
 

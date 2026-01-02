@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 
 interface Props {
   src: string;
@@ -7,12 +7,7 @@ interface Props {
 }
 
 const props = defineProps<Props>();
-const emit = defineEmits<{
-  (e: 'close'): void;
-}>();
-
-const containerRef = ref<HTMLElement | null>(null);
-const imageRef = ref<HTMLImageElement | null>(null);
+const emit = defineEmits<(e: 'close') => void>();
 
 // 缩放和平移状态
 const scale = ref(1);
@@ -30,7 +25,6 @@ const initialScale = ref(0);
 
 // 双击检测状态
 const lastTapTime = ref(0);
-const tapTimeout = ref<ReturnType<typeof setTimeout> | null>(null);
 
 // 重置视图
 const resetView = () => {
@@ -56,14 +50,6 @@ const getPinchDistance = (touch1: Touch, touch2: Touch) => {
   const dx = touch1.clientX - touch2.clientX;
   const dy = touch1.clientY - touch2.clientY;
   return Math.sqrt(dx * dx + dy * dy);
-};
-
-// 计算两指中心点
-const getPinchCenter = (touch1: Touch, touch2: Touch) => {
-  return {
-    x: (touch1.clientX + touch2.clientX) / 2,
-    y: (touch1.clientY + touch2.clientY) / 2,
-  };
 };
 
 // 鼠标滚轮缩放
@@ -99,12 +85,12 @@ const handleTouchStart = (e: TouchEvent) => {
   if (e.touches.length === 1) {
     // 单指：准备拖动
     isDragging.value = true;
-    startX.value = e.touches[0].clientX - translateX.value;
-    startY.value = e.touches[0].clientY - translateY.value;
+    startX.value = e.touches[0]!.clientX - translateX.value;
+    startY.value = e.touches[0]!.clientY - translateY.value;
   } else if (e.touches.length === 2) {
     // 双指：准备缩放
     isDragging.value = false;
-    initialPinchDistance.value = getPinchDistance(e.touches[0], e.touches[1]);
+    initialPinchDistance.value = getPinchDistance(e.touches[0]!, e.touches[1]!);
     initialScale.value = scale.value;
   }
 };
@@ -115,19 +101,22 @@ const handleTouchMove = (e: TouchEvent) => {
 
   if (e.touches.length === 1 && isDragging.value) {
     // 单指拖动
-    translateX.value = e.touches[0].clientX - startX.value;
-    translateY.value = e.touches[0].clientY - startY.value;
+    translateX.value = e.touches[0]!.clientX - startX.value;
+    translateY.value = e.touches[0]!.clientY - startY.value;
   } else if (e.touches.length === 2) {
     // 双指缩放
-    const currentDistance = getPinchDistance(e.touches[0], e.touches[1]);
+    const currentDistance = getPinchDistance(e.touches[0]!, e.touches[1]!);
     const scaleRatio = currentDistance / initialPinchDistance.value;
-    const newScale = Math.max(0.5, Math.min(5, initialScale.value * scaleRatio));
+    const newScale = Math.max(
+      0.5,
+      Math.min(5, initialScale.value * scaleRatio),
+    );
     scale.value = newScale;
   }
 };
 
 // 触摸结束
-const handleTouchEnd = (e: TouchEvent) => {
+const handleTouchEnd = (_e: TouchEvent) => {
   isDragging.value = false;
 
   // 检测双击
@@ -174,15 +163,20 @@ onUnmounted(() => {
 });
 
 // 监听触摸事件（只在预览打开时）
-watch(() => props.open, (isOpen) => {
-  if (isOpen) {
-    document.addEventListener('touchmove', handleTouchMove, { passive: false });
-    document.addEventListener('touchend', handleTouchEnd);
-  } else {
-    document.removeEventListener('touchmove', handleTouchMove);
-    document.removeEventListener('touchend', handleTouchEnd);
-  }
-});
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) {
+      document.addEventListener('touchmove', handleTouchMove, {
+        passive: false,
+      });
+      document.addEventListener('touchend', handleTouchEnd);
+    } else {
+      document.removeEventListener('touchmove', handleTouchMove);
+      document.removeEventListener('touchend', handleTouchEnd);
+    }
+  },
+);
 </script>
 
 <template>
@@ -237,7 +231,6 @@ watch(() => props.open, (isOpen) => {
 
         <!-- 图片容器 -->
         <div
-          ref="containerRef"
           class="relative w-full h-full overflow-hidden cursor-grab active:cursor-grabbing touch-none"
           @wheel.prevent="handleWheel"
           @mousedown="handleMouseDown"
@@ -256,7 +249,6 @@ watch(() => props.open, (isOpen) => {
           >
             <img
               v-if="open"
-              ref="imageRef"
               :src="src"
               class="absolute top-1/2 left-1/2 max-w-[90vw] max-h-[90vh] object-contain origin-center select-none pointer-events-none"
               :style="{

@@ -496,7 +496,9 @@ export function useGameState() {
     localStorage.removeItem('mg_affinity_state');
     endingData.value = null;
 
-    const sharedId = String(sessionStorage.getItem('mg_shared_play_id') || '').trim();
+    const sharedId = String(
+      sessionStorage.getItem('mg_shared_play_id') || '',
+    ).trim();
     if (sharedId) {
       router.push(`/play/${encodeURIComponent(sharedId)}`);
       return;
@@ -504,8 +506,7 @@ export function useGameState() {
 
     const entry = String(sessionStorage.getItem('mg_play_entry') || '').trim();
     if (entry === 'shared') {
-      const storedSharedId =
-        String(gameData.value?.requestId || '').trim();
+      const storedSharedId = String(gameData.value?.requestId || '').trim();
 
       if (storedSharedId) {
         router.push(`/play/${encodeURIComponent(storedSharedId)}`);

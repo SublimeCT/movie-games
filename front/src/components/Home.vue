@@ -450,7 +450,12 @@ const handleExpandSynopsisPrompt = async () => {
   error.value = '';
   isPromptLoading.value = true;
   try {
-    const text = await expandSynopsisPrompt(theme.value, synopsis.value, selectedGenres.value as string[], navigator.language);
+    const text = await expandSynopsisPrompt(
+      theme.value,
+      synopsis.value,
+      selectedGenres.value as string[],
+      navigator.language,
+    );
     promptText.value = text;
     isPromptOpen.value = true;
   } catch (e: any) {
@@ -468,7 +473,13 @@ const handleExpandCharacterPrompt = async () => {
   error.value = '';
   isPromptLoading.value = true;
   try {
-    const text = await expandCharacterPrompt(theme.value, synopsis.value, toApiCharacters(characters.value), selectedGenres.value as string[], navigator.language);
+    const text = await expandCharacterPrompt(
+      theme.value,
+      synopsis.value,
+      toApiCharacters(characters.value),
+      selectedGenres.value as string[],
+      navigator.language,
+    );
     promptText.value = text;
     isPromptOpen.value = true;
   } catch (e: any) {

@@ -4,8 +4,9 @@ import {
   AlertCircle,
   ClipboardCopy,
   HelpCircle,
-  History,
+ History,
   Import as ImportIcon,
+  Github as GithubIcon,
   KeyRound,
   Link2,
   Pencil,
@@ -1408,6 +1409,15 @@ onMounted(() => {
                     <p class="text-neutral-400 text-xs md:text-lg tracking-[0.1em] md:tracking-[0.2em] uppercase font-light">AI 驱动的互动剧情游戏生成器</p>
                 </div>
                 <div class="flex items-center gap-2 md:gap-3 flex-shrink-0">
+                    <a
+                        href="https://github.com/SublimeCT/movie-games"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="p-1.5 md:p-2 rounded-full bg-black/30 backdrop-blur-md border border-white/10 hover:bg-white/10 hover:border-purple-500/50 transition-all group"
+                        title="GitHub"
+                    >
+                        <GithubIcon class="w-4 h-4 md:w-5 md:h-5 text-white/70 group-hover:text-white transition-colors" />
+                    </a>
                     <button
                         @click="isHelpOpen = true"
                         class="p-1.5 md:p-2 rounded-full bg-black/30 backdrop-blur-md border border-white/10 hover:bg-white/10 hover:border-purple-500/50 transition-all group"

@@ -10,7 +10,6 @@ import {
   KeyRound,
   Link2,
   Pencil,
-  Settings as SettingsIcon,
   Sparkles,
   Wand2,
   X,
@@ -86,27 +85,6 @@ onMounted(() => {
 const characters = useStorage<LocalCharacterInput[]>('mg_characters', [
   { name: '主角', description: '故事的核心人物', gender: '男', isMain: true },
 ]);
-/** GLM 的默认请求地址（用于判定“是否被修改”） */
-const DEFAULT_GLM_BASE_URL =
-  'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-/** GLM 的默认模型（用于判定“是否被修改”） */
-const DEFAULT_GLM_MODEL = 'glm-4.6v-flash';
-
-/** API key for GLM service */
-const glmApiKey = useStorage('mg_glm_api_key', '');
-/** Base URL for GLM service */
-const glmBaseUrl = useStorage('mg_glm_base_url', DEFAULT_GLM_BASE_URL);
-/** Selected GLM model */
-const glmModel = useStorage('mg_glm_model', DEFAULT_GLM_MODEL);
-
-/**
- * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。
- */
-const securityLocked = computed(() => {
-  const baseUrlTouched = glmBaseUrl.value.trim() !== DEFAULT_GLM_BASE_URL;
-  const modelTouched = glmModel.value.trim() !== DEFAULT_GLM_MODEL;
-  return baseUrlTouched || modelTouched;
-});
 
 // Patch legacy data missing gender
 characters.value.forEach((c) => {
@@ -119,7 +97,6 @@ const isExpandingSyn = ref(false); // Renamed
 const isExpandingChar = ref(false);
 const error = ref('');
 const isRateLimitError = ref(false);
-const apiKeyRequired = ref(false);
 
 const isPromptOpen = ref(false);
 const isPromptLoading = ref(false);
@@ -131,34 +108,6 @@ const importText = ref('');
 const importError = ref('');
 const isImportSaving = ref(false);
 const isHelpOpen = ref(false);
-
-const isSettingsOpen = ref(false);
-const baseUrlError = ref('');
-
-/**
- * Validates the custom Base URL.
- * Checks if the URL is well-formed.
- * @returns {boolean} True if valid or empty, false otherwise.
- */
-const validateBaseUrl = () => {
-  const url = glmBaseUrl.value.trim();
-  if (!url) {
-    baseUrlError.value = '';
-    return true;
-  }
-  try {
-    new URL(url);
-    baseUrlError.value = '';
-    return true;
-  } catch {
-    baseUrlError.value = '请输入有效的 URL (例如 https://api.example.com)';
-    return false;
-  }
-};
-
-watch(glmBaseUrl, () => {
-  if (baseUrlError.value) validateBaseUrl();
-});
 
 const availableGenres = [
   '科幻',
@@ -381,12 +330,8 @@ const removeCharacter = (index: number) => {
 
 /**
  * Expands the synopsis based on the theme using AI.
- * Requires API key.
  */
 const handleExpandSynopsis = async () => {
-  const apiKey = glmApiKey.value.trim();
-  const baseUrl = glmBaseUrl.value.trim();
-  const model = glmModel.value.trim();
   if (!theme.value) {
     error.value = '请先填写主题';
     return;
@@ -398,18 +343,11 @@ const handleExpandSynopsis = async () => {
       synopsis.value,
       selectedGenres.value as string[],
       navigator.language,
-      apiKey || undefined,
-      baseUrl || undefined,
-      model || undefined,
     );
     synopsis.value = text;
     // biome-ignore lint/suspicious/noExplicitAny: Error handling
   } catch (e: any) {
     if (e instanceof ApiError) {
-      if (e.code === 'API_KEY_REQUIRED') {
-        isSettingsOpen.value = true;
-        apiKeyRequired.value = true;
-      }
       isRateLimitError.value =
         e.code === 'TOO_MANY_REQUESTS' ||
         e.code === 'API_KEY_REQUIRED' ||
@@ -434,9 +372,6 @@ const toApiCharacters = (list: LocalCharacterInput[]): ApiCharacterInput[] => {
 };
 
 const handleExpandCharacter = async () => {
-  const apiKey = glmApiKey.value.trim();
-  const baseUrl = glmBaseUrl.value.trim();
-  const model = glmModel.value.trim();
   if (!theme.value || !synopsis.value) {
     error.value = '请先填写主题和剧情简介';
     return;
@@ -449,18 +384,11 @@ const handleExpandCharacter = async () => {
       toApiCharacters(characters.value),
       selectedGenres.value as string[],
       navigator.language,
-      apiKey || undefined,
-      baseUrl || undefined,
-      model || undefined,
     );
     characters.value = newChars.map((c) => ({ ...c }));
     // biome-ignore lint/suspicious/noExplicitAny: Error handling
   } catch (e: any) {
     if (e instanceof ApiError) {
-      if (e.code === 'API_KEY_REQUIRED') {
-        isSettingsOpen.value = true;
-        apiKeyRequired.value = true;
-      }
       isRateLimitError.value =
         e.code === 'TOO_MANY_REQUESTS' ||
         e.code === 'API_KEY_REQUIRED' ||
@@ -595,6 +523,7 @@ const handleDesign = () => {
         content: '故事开始...',
         choices: [],
         characters: [],
+        level: 0,
       },
     },
     characters: {},
@@ -676,9 +605,6 @@ const handleGenerate = async () => {
     characters: toApiCharacters(characters.value),
     language: navigator.language,
     size: selectCogViewSize(),
-    apiKey: glmApiKey.value.trim(),
-    baseUrl: glmBaseUrl.value.trim(),
-    model: glmModel.value.trim(),
   };
   localStorage.setItem('mg_generate_params', JSON.stringify(generateParams));
 
@@ -687,9 +613,6 @@ const handleGenerate = async () => {
 };
 
 const handleGeneratePrompt = async () => {
-  const apiKey = glmApiKey.value.trim();
-  const baseUrl = glmBaseUrl.value.trim();
-  const model = glmModel.value.trim();
   isPromptLoading.value = true;
   error.value = '';
   isRateLimitError.value = false;
@@ -703,18 +626,11 @@ const handleGeneratePrompt = async () => {
       characters: toApiCharacters(characters.value),
       language: navigator.language,
       size,
-      apiKey: apiKey || undefined,
-      baseUrl: baseUrl || undefined,
-      model: model || undefined,
     });
     promptText.value = text;
     isPromptOpen.value = true;
     // biome-ignore lint/suspicious/noExplicitAny: Error handling
   } catch (e: any) {
-    if (e instanceof ApiError && e.code === 'API_KEY_REQUIRED') {
-      isSettingsOpen.value = true;
-      apiKeyRequired.value = true;
-    }
     error.value = e.message || '获取提示词失败';
   } finally {
     isPromptLoading.value = false;
@@ -952,12 +868,6 @@ const confirmImportStart = () => {
 };
 
 const confirmImportDesign = () => {
-  if (securityLocked.value) {
-    importError.value =
-      '检测到本地模型配置已被修改（Base URL / Model）。为确保数据安全，已禁用设计功能。请先在设置中恢复默认配置。';
-    return;
-  }
-
   const data = parseImportData();
   if (!data) return;
   isImportOpen.value = false;
@@ -1069,13 +979,6 @@ onMounted(() => {
       // Only show if error occurred within last minute (avoid stale errors)
       if (Date.now() - errorData.timestamp < 60000) {
         error.value = errorData.message;
-        if (
-          errorData.code === 'API_KEY_REQUIRED' ||
-          errorData.code === 'TOO_MANY_REQUESTS'
-        ) {
-          apiKeyRequired.value = true;
-          isSettingsOpen.value = true;
-        }
       }
     } catch {
       // Ignore parse errors
@@ -1272,7 +1175,6 @@ onMounted(() => {
 
               <button
                 @click="confirmImportDesign"
-                :disabled="securityLocked"
                 class="relative inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-black/35 border border-white/10 text-white/90 font-bold hover:bg-black/55 hover:shadow-[0_0_30px_rgba(34,211,238,0.2)] hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
               >
                 <Wand2 class="w-4 h-4 text-cyan-300" />
@@ -1289,106 +1191,6 @@ onMounted(() => {
       </div>
     </Transition>
 
-    <!-- Settings Modal -->
-    <Transition enter-active-class="animate-in fade-in duration-200" leave-active-class="animate-out fade-out duration-150">
-      <div v-if="isSettingsOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4">
-        <div class="absolute inset-0 bg-black/80 backdrop-blur-md" @click="isSettingsOpen = false"></div>
-        <div :class="['w-full max-w-2xl bg-neutral-900/90 rounded-2xl overflow-hidden shadow-2xl relative z-10', apiKeyRequired ? 'border-2 border-red-500/50' : 'border border-white/10']">
-          <div :class="['px-5 py-4 flex items-center justify-between', apiKeyRequired ? 'bg-red-900/20 border-red-500/30' : '', 'border-b border-white/10']">
-            <div class="text-sm tracking-[0.22em] uppercase font-semibold flex items-center gap-2"
-                 :class="apiKeyRequired ? 'text-red-300' : 'text-white/70'">
-              <SettingsIcon :class="apiKeyRequired ? 'text-red-400' : 'text-white/70'" class="w-4 h-4" />
-              connection settings
-            </div>
-            <button @click="isSettingsOpen = false" class="p-2 rounded-lg hover:bg-white/5 transition-colors">
-              <X class="w-5 h-5" :class="apiKeyRequired ? 'text-red-300' : 'text-white/70'" />
-            </button>
-          </div>
-
-          <!-- API Key Required Warning Banner -->
-          <div v-if="apiKeyRequired" class="mx-6 mt-6 p-4 bg-red-500/10 border border-red-500/30 rounded-xl">
-            <div class="flex items-start gap-3">
-              <AlertCircle class="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
-              <div>
-                <h4 class="text-sm font-bold text-red-300 mb-1">需要 API Key 才能继续</h4>
-                <p class="text-xs text-neutral-300">
-                  服务端默认额度已用完。请使用您自己的智谱 AI API Key 继续使用。
-                  <a href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank" rel="noopener" class="text-cyan-400 hover:text-cyan-300 underline">获取 API Key →</a>
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div class="p-8 space-y-6">
-            <div class="space-y-3">
-                <div class="flex items-center justify-between">
-                <label class="text-sm font-bold text-neutral-300 uppercase tracking-wider flex items-center gap-2">
-                    <KeyRound class="w-4 h-4" :class="apiKeyRequired ? 'text-red-400' : 'text-purple-400'" />
-                    API Key
-                </label>
-                <div v-if="apiKeyRequired" class="text-xs text-red-400 font-bold bg-red-500/10 px-2 py-0.5 rounded animate-pulse">必填</div>
-                </div>
-                <input
-                v-model="glmApiKey"
-                type="password"
-                autocomplete="off"
-                spellcheck="false"
-                :class="['w-full rounded-xl px-4 py-3 text-white outline-none placeholder-neutral-600 transition-all font-mono', apiKeyRequired ? 'bg-red-900/20 border-2 border-red-500/50 focus:ring-2 focus:ring-red-500 focus:border-red-400' : 'bg-black/50 border border-neutral-700 focus:ring-2 focus:ring-purple-500 focus:border-transparent']"
-                :placeholder="apiKeyRequired ? '请输入您的 API Key' : '不填则使用服务端默认 Key'"
-                />
-                <p v-if="!apiKeyRequired" class="text-xs text-neutral-500">
-                    默认情况下无需填写。当每日访问量超过限制或并发较高时，系统会提示您填写。
-                </p>
-            </div>
-
-            <div class="space-y-3">
-                <label class="text-sm font-bold text-neutral-300 uppercase tracking-wider flex items-center gap-2">
-                    <Link2 class="w-4 h-4 text-cyan-400" />
-                    Base URL
-                </label>
-                <input
-                v-model="glmBaseUrl"
-                @blur="validateBaseUrl"
-                type="text"
-                autocomplete="off"
-                spellcheck="false"
-                :class="['w-full bg-black/50 border rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none placeholder-neutral-600 transition-all font-mono', baseUrlError ? 'border-red-500/50 focus:ring-red-500' : 'border-neutral-700']"
-                placeholder="可选：自定义 GLM 接口 Base URL"
-                />
-                <p v-if="baseUrlError" class="text-xs text-red-400 font-bold">{{ baseUrlError }}</p>
-                <p v-else class="text-xs text-neutral-500">
-                    如果您使用中转服务或自定义代理，请在此填写完整的 Base URL。
-                </p>
-            </div>
-
-            <div class="space-y-3">
-                <label class="text-sm font-bold text-neutral-300 uppercase tracking-wider flex items-center gap-2">
-                    <Wand2 class="w-4 h-4 text-pink-400" />
-                    Model
-                </label>
-                <input
-                v-model="glmModel"
-                type="text"
-                autocomplete="off"
-                spellcheck="false"
-                class="w-full bg-black/50 border border-neutral-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none placeholder-neutral-600 transition-all font-mono"
-                placeholder="glm-4.6v-flash"
-                />
-                <p class="text-xs text-neutral-500">
-                    指定使用的模型名称（默认为 glm-4.6v-flash）。如果不填写，将使用默认值。
-                </p>
-            </div>
-
-            <div class="pt-4 flex justify-end">
-                <button @click="isSettingsOpen = false" class="px-6 py-2 rounded-full bg-white text-black font-bold hover:bg-neutral-200 transition-colors">
-                    完成
-                </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Transition>
-    
     <!-- Inspira-style Background -->
     <WavyBackground 
       container-class="fixed inset-0 z-0 pointer-events-none"
@@ -1439,48 +1241,12 @@ onMounted(() => {
                     >
                         <History class="w-4 h-4 md:w-5 md:h-5 text-white/70 group-hover:text-white transition-colors" />
                     </button>
-                    <button
-                        @click="isSettingsOpen = true"
-                        class="p-1.5 md:p-2 rounded-full bg-black/30 backdrop-blur-md border border-white/10 hover:bg-white/10 hover:border-purple-500/50 transition-all group"
-                        title="连接设置"
-                    >
-                        <SettingsIcon class="w-4 h-4 md:w-5 md:h-5 text-white/70 group-hover:text-white transition-colors" />
-                    </button>
+
                 </div>
             </div>
         </header>
 
-        <!-- API Key Error Banner -->
-        <Transition
-            enter-active-class="animate-in fade-in slide-in-from-top-4 duration-300"
-            leave-active-class="animate-out fade-out slide-out-to-top-4 duration-200"
-        >
-            <div
-                v-if="error && apiKeyRequired"
-                class="mb-4 relative z-20 bg-gradient-to-r from-red-900/40 via-orange-900/40 to-red-900/40 backdrop-blur-md border border-red-500/40 rounded-2xl p-4 shadow-2xl"
-            >
-                <div class="flex items-start gap-3">
-                    <div class="flex-shrink-0 w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center border border-red-500/30">
-                        <KeyRound class="w-5 h-5 text-red-400" />
-                    </div>
-                    <div class="flex-1 min-w-0">
-                        <h3 class="text-sm font-bold text-red-300 mb-1">需要配置 API Key</h3>
-                        <p class="text-xs text-neutral-300 leading-relaxed">
-                            {{ error }}
-                        </p>
-                        <p class="text-xs text-neutral-400 mt-1">
-                            请在设置中配置您自己的智谱 AI API Key 以继续使用
-                        </p>
-                    </div>
-                    <button
-                        @click="error = ''; apiKeyRequired = false;"
-                        class="flex-shrink-0 p-1.5 rounded-lg hover:bg-white/10 transition-colors text-neutral-400 hover:text-white"
-                    >
-                        <X class="w-4 h-4" />
-                    </button>
-                </div>
-            </div>
-        </Transition>
+
 
         <!-- Main Card with Glow Effect -->
         <div class="relative group flex-shrink min-h-0 flex flex-col justify-center max-h-full">
@@ -1797,18 +1563,18 @@ onMounted(() => {
                         @mousemove="handleBtnMouseMove"
                         @click="handleGenerate"
                         :disabled="isLoading || isExpandingSyn || isExpandingChar"
-                        class="flex-1 py-3 md:py-4 rounded-xl bg-neutral-900 border border-white/10 text-white font-black text-base md:text-xl hover:shadow-[0_0_30px_rgba(168,85,247,0.4)] hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 flex justify-center items-center gap-2 md:gap-3 relative overflow-hidden group"
+                        class="flex-1 py-3 md:py-4 rounded-xl bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 border border-white/20 text-white font-black text-base md:text-xl shadow-[0_0_20px_rgba(168,85,247,0.5)] hover:shadow-[0_0_40px_rgba(168,85,247,0.8)] hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 flex justify-center items-center gap-2 md:gap-3 relative overflow-hidden group animate-pulse-slow"
                     >
                         <!-- Spotlight Effect -->
-                        <div class="pointer-events-none absolute -inset-px opacity-0 transition duration-300 group-hover:opacity-100" style="background: radial-gradient(600px circle at var(--x) var(--y), rgba(168, 85, 247, 0.4), transparent 40%);"></div>
-                        <!-- Background Gradient (Subtle) -->
-                         <div class="absolute inset-0 bg-gradient-to-r from-purple-900/50 via-pink-900/50 to-purple-900/50 opacity-50"></div>
+                        <div class="pointer-events-none absolute -inset-px opacity-0 transition duration-300 group-hover:opacity-100" style="background: radial-gradient(600px circle at var(--x) var(--y), rgba(255, 255, 255, 0.4), transparent 40%);"></div>
+                        <!-- Shine Effect -->
+                        <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:animate-shimmer"></div>
 
-                        <svg v-if="isLoading" viewBox="0 0 24 24" fill="none" class="w-5 h-5 md:w-6 md:h-6 text-white/95 animate-spin relative z-10">
+                        <svg v-if="isLoading" viewBox="0 0 24 24" fill="none" class="w-5 h-5 md:w-6 md:h-6 text-white animate-spin relative z-10">
                           <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" class="opacity-20"/>
                           <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
                         </svg>
-                        <span class="relative z-10 whitespace-nowrap">{{ isLoading ? '正在生成剧本...' : '🚀 开始生成' }}</span>
+                        <span class="relative z-10 whitespace-nowrap drop-shadow-md">{{ isLoading ? '正在生成剧本...' : '🚀 开始生成' }}</span>
                     </button>
 
                     <button
@@ -1829,7 +1595,6 @@ onMounted(() => {
 
                     <button
                         @click="handleDesign"
-                        :disabled="securityLocked"
                         class="relative inline-flex items-center justify-center gap-1.5 px-2 md:px-4 py-3 md:py-4 rounded-xl border border-white/10 bg-white/5 backdrop-blur-md text-xs md:text-sm font-bold text-white/50 hover:text-white hover:border-white/30 hover:bg-white/10 transition-all disabled:opacity-30 group overflow-hidden whitespace-nowrap flex-shrink-0"
                     >
                         <Pencil class="w-3 h-3 md:w-4 md:h-4 text-cyan-400 group-hover:text-cyan-300 transition-colors flex-shrink-0" />

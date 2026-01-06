@@ -24,23 +24,7 @@ import { WavyBackground } from './ui/wavy-background';
 
 const router = useRouter();
 
-/** GLM 的默认请求地址（用于判定“是否被修改”） */
-const DEFAULT_GLM_BASE_URL =
-  'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-/** GLM 的默认模型（用于判定“是否被修改”） */
-const DEFAULT_GLM_MODEL = 'glm-4.6v-flash';
 
-const glmBaseUrl = useStorage('mg_glm_base_url', DEFAULT_GLM_BASE_URL);
-const glmModel = useStorage('mg_glm_model', DEFAULT_GLM_MODEL);
-
-/**
- * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。
- */
-const securityLocked = computed(() => {
-  const baseUrlTouched = glmBaseUrl.value.trim() !== DEFAULT_GLM_BASE_URL;
-  const modelTouched = glmModel.value.trim() !== DEFAULT_GLM_MODEL;
-  return baseUrlTouched || modelTouched;
-});
 
 const recordIds = useStorage<string[]>('mg_record_ids', []);
 
@@ -224,13 +208,6 @@ const play = (item: RecordsListItem) => {
 };
 
 const design = (item: RecordsListItem) => {
-  if (securityLocked.value) {
-    showToast(
-      '检测到本地模型配置已被修改，已禁用设计功能（数据安全）',
-      'error',
-    );
-    return;
-  }
   sessionStorage.setItem('mg_play_entry', 'owner');
   router.push(`/design?id=${item.requestId}`);
 };
@@ -270,14 +247,6 @@ const performToggleShare = async (item: RecordsListItem, next: boolean) => {
  * 切换分享状态（取消分享 / 重新分享）。
  */
 const toggleShare = async (item: RecordsListItem) => {
-  if (securityLocked.value) {
-    showToast(
-      '检测到本地模型配置已被修改，已禁用分享功能（数据安全）',
-      'error',
-    );
-    return;
-  }
-
   if (busyItemId.value) return;
 
   const next = !item.shared;
@@ -476,7 +445,7 @@ watch(
 
                     <button
                       @click="design(item)"
-                      :disabled="securityLocked"
+                      :disabled="false"
                       class="group/btn relative inline-flex items-center justify-center px-4 py-3 rounded-2xl font-bold text-white/90 border border-white/10 bg-black/25 hover:bg-black/45 backdrop-blur-md transition-all gap-2 overflow-hidden flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <div class="absolute inset-0 bg-white/10 translate-y-full group-hover/btn:translate-y-0 transition-transform duration-300"></div>
@@ -486,7 +455,7 @@ watch(
 
                     <button
                       @click="toggleShare(item)"
-                      :disabled="busyItemId === item.requestId || securityLocked"
+                      :disabled="busyItemId === item.requestId"
                       class="group/btn relative inline-flex items-center justify-center px-4 py-3 rounded-2xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-[0_0_25px_rgba(34,211,238,0.14)] transition-all gap-2 overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed flex-1"
                     >
                       <div class="absolute inset-0 bg-white/10 translate-y-full group-hover/btn:translate-y-0 transition-transform duration-300"></div>

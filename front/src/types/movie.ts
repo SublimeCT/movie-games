@@ -97,7 +97,7 @@ export interface StoryNode {
   content: string;
 
   /** 节点层级 (1-based) */
-  level?: number;
+  level: number;
 
   /** 本节点出现的角色名字列表 */
   characters?: string[];

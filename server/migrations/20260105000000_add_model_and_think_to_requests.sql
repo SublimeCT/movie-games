@@ -1,0 +1,3 @@
+ALTER TABLE glm_requests
+    ADD COLUMN IF NOT EXISTS model_name TEXT,
+    ADD COLUMN IF NOT EXISTS is_think_enabled BOOLEAN DEFAULT FALSE;

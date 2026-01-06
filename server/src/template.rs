@@ -346,7 +346,7 @@ pub(crate) fn normalize_template_endings(template: &mut MovieTemplate) {
         }
     }
 
-    if template.endings.len() > 5 {
+    if template.endings.len() > 6 {
         let mut keep: HashMap<String, types::Ending> = HashMap::new();
         for k in ["ending_good", "ending_neutral", "ending_bad"] {
             if let Some(v) = template.endings.get(k).cloned() {
@@ -354,9 +354,9 @@ pub(crate) fn normalize_template_endings(template: &mut MovieTemplate) {
             }
         }
 
-        if keep.len() < 5 {
+        if keep.len() < 6 {
             for (k, v) in template.endings.iter() {
-                if keep.len() >= 5 {
+                if keep.len() >= 6 {
                     break;
                 }
                 if keep.contains_key(k) {

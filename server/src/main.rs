@@ -7,6 +7,7 @@ mod db;
 mod glm;
 mod handlers;
 mod images;
+mod llm_client;
 mod prompt;
 mod sensitive;
 mod template;
@@ -20,6 +21,9 @@ mod types;
 
 #[tokio::main]
 async fn main() {
+    // 优先加载 .env.local，如果存在则设置环境变量（不会被后续 .env 覆盖）
+    dotenv::from_filename(".env.local").ok();
+    // 加载 .env 作为默认值
     dotenv::dotenv().ok();
 
     let db_pool = db::init_pool()

@@ -62,16 +62,7 @@ const characters = useStorage<
     isMain: true,
   },
 ]);
-/** GLM 的默认请求地址（用于判定“是否被修改”） */
-const DEFAULT_GLM_BASE_URL =
-  'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-/** GLM 的默认模型（用于判定“是否被修改”） */
-const DEFAULT_GLM_MODEL = 'glm-4.6v-flash';
 
-const glmBaseUrl = useStorage('mg_glm_base_url', DEFAULT_GLM_BASE_URL);
-const glmModel = useStorage('mg_glm_model', DEFAULT_GLM_MODEL);
-
-/** 首页“剧情类型”可选项（与首页保持一致） */
 const availableGenres = [
   '科幻',
   '剧情',
@@ -106,14 +97,7 @@ const addCustomGenre = () => {
   }
 };
 
-/**
- * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。
- */
-const securityLocked = computed(() => {
-  const baseUrlTouched = glmBaseUrl.value.trim() !== DEFAULT_GLM_BASE_URL;
-  const modelTouched = glmModel.value.trim() !== DEFAULT_GLM_MODEL;
-  return baseUrlTouched || modelTouched;
-});
+
 
 const isLoading = ref(false);
 const loadError = ref('');
@@ -1234,7 +1218,6 @@ const endingKeys = computed(() => {
 });
 
 const canEdit = computed(() => {
-  if (securityLocked.value) return false;
   if (playEntry.value === 'import') return true;
   if (playEntry.value === 'owner') return isOwner.value;
   return false;

@@ -102,8 +102,8 @@ onUnmounted(() => {
 }
 
 .animate-progress {
-  /* 150s duration as requested (2.5 minutes) */
-  animation: progress 150s cubic-bezier(0.2, 0, 0.2, 1) forwards;
+  /* Duration is set dynamically via style binding */
+  animation: progress var(--duration, 150s) cubic-bezier(0.2, 0, 0.2, 1) forwards;
 }
 
 @keyframes mg-spin {

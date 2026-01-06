@@ -79,6 +79,8 @@ pub(crate) async fn begin_glm_request_log(
     request_payload: serde_json::Value,
     glm_prompt: &str,
     using_override_key: bool,
+    model_name: Option<&str>,
+    is_think_enabled: bool,
 ) -> Result<Uuid, DbError> {
     let mut tx = db.begin().await.map_err(|_| DbError::InternalError)?;
 
@@ -133,7 +135,7 @@ pub(crate) async fn begin_glm_request_log(
 
     let id = Uuid::new_v4();
     sqlx::query(
-        "insert into glm_requests (id, client_ip, user_agent, route, status, request_payload, glm_prompt) values ($1, $2, $3, $4, 'running', $5, $6)",
+        "insert into glm_requests (id, client_ip, user_agent, route, status, request_payload, glm_prompt, model_name, is_think_enabled) values ($1, $2, $3, $4, 'running', $5, $6, $7, $8)",
     )
     .bind(id)
     .bind(client_ip)
@@ -141,6 +143,8 @@ pub(crate) async fn begin_glm_request_log(
     .bind(route)
     .bind(request_payload)
     .bind(glm_prompt)
+    .bind(model_name)
+    .bind(is_think_enabled)
     .execute(&mut *tx)
     .await
     .map_err(|_| DbError::InternalError)?;

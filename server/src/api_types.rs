@@ -73,12 +73,6 @@ pub(crate) struct GenerateRequest {
     pub(crate) language: Option<String>,
     #[serde(default)]
     pub(crate) size: Option<String>,
-    #[serde(default)]
-    pub(crate) api_key: Option<String>,
-    #[serde(default)]
-    pub(crate) base_url: Option<String>,
-    #[serde(default)]
-    pub(crate) model: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Serialize, Clone)]
@@ -98,11 +92,6 @@ pub(crate) struct ExpandWorldviewRequest {
     #[serde(default)]
     pub(crate) genre: Option<Vec<String>>,
     pub(crate) language: Option<String>,
-    pub(crate) api_key: Option<String>,
-    #[serde(default)]
-    pub(crate) base_url: Option<String>,
-    #[serde(default)]
-    pub(crate) model: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -115,9 +104,4 @@ pub(crate) struct ExpandCharacterRequest {
     #[serde(default)]
     pub(crate) genre: Option<Vec<String>>,
     pub(crate) language: Option<String>,
-    pub(crate) api_key: Option<String>,
-    #[serde(default)]
-    pub(crate) base_url: Option<String>,
-    #[serde(default)]
-    pub(crate) model: Option<String>,
 }

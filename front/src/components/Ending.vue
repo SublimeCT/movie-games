@@ -8,6 +8,7 @@ import {
   Link as LinkIcon,
   Lock,
   Pencil,
+  Save,
   Share2,
   X,
 } from 'lucide-vue-next';
@@ -15,7 +16,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import CharacterAvatar from './ui/CharacterAvatar.vue';
 import PlotTree from './PlotTree.vue';
-import { getSharedRecordMeta, shareGame } from '../api';
+import { getSharedRecordMeta, importGameTemplate, shareGame, updateGameTemplate } from '../api';
 import { useGameState } from '../hooks/useGameState';
 import type { Character, Ending, StoryNode } from '../types/movie';
 
@@ -141,23 +142,7 @@ const isOwner = ref(true);
 const sharedRecordId = ref<string | null>(null);
 const sharedAt = ref<string | null>(null);
 
-/** GLM 的默认请求地址（用于判定“是否被修改”） */
-const DEFAULT_GLM_BASE_URL =
-  'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-/** GLM 的默认模型（用于判定“是否被修改”） */
-const DEFAULT_GLM_MODEL = 'glm-4.6v-flash';
 
-const glmBaseUrl = useStorage('mg_glm_base_url', DEFAULT_GLM_BASE_URL);
-const glmModel = useStorage('mg_glm_model', DEFAULT_GLM_MODEL);
-
-/**
- * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。
- */
-const securityLocked = computed(() => {
-  const baseUrlTouched = glmBaseUrl.value.trim() !== DEFAULT_GLM_BASE_URL;
-  const modelTouched = glmModel.value.trim() !== DEFAULT_GLM_MODEL;
-  return baseUrlTouched || modelTouched;
-});
 
 const recordIds = useStorage<string[]>('mg_record_ids', []);
 const playEntry = ref<'owner' | 'shared' | 'import'>('owner');
@@ -223,14 +208,6 @@ const handleShare = async () => {
     return;
   }
 
-  if (securityLocked.value) {
-    showToast(
-      '检测到本地模型配置已被修改（数据安全），已禁用分享功能',
-      'error',
-    );
-    return;
-  }
-
   if (!data.value?.requestId) {
     showToast('此数据不支持在线分享', 'error');
     return;
@@ -291,14 +268,6 @@ const goDesign = () => {
     return;
   }
 
-  if (securityLocked.value) {
-    showToast(
-      '检测到本地模型配置已被修改（数据安全），已禁用设计功能',
-      'error',
-    );
-    return;
-  }
-
   sessionStorage.setItem('mg_play_entry', 'owner');
   const requestId = data.value?.requestId;
   if (requestId) {
@@ -306,6 +275,55 @@ const goDesign = () => {
     return;
   }
   router.push('/design');
+};
+
+const handleSave = async () => {
+  if (securityLocked.value) {
+    showToast(
+      '检测到本地模型配置已被修改（数据安全），已禁用保存功能',
+      'error',
+    );
+    return;
+  }
+
+  const t = data.value;
+  if (!t) return;
+
+  try {
+    if (playEntry.value === 'owner' && t.requestId) {
+      // Owner update
+      await updateGameTemplate(t.requestId, t);
+      if (!recordIds.value.includes(t.requestId)) {
+        recordIds.value = [t.requestId, ...recordIds.value];
+      }
+      showToast('保存成功', 'success');
+    } else {
+      // Shared/Import -> Fork
+      // Remove requestId to force new creation
+      const clone = JSON.parse(JSON.stringify(t));
+      delete clone.requestId;
+      // Reset owner info
+      clone.owner = 'User'; 
+      
+      // Import as new
+      const res = await importGameTemplate({ template: clone });
+      if (res.requestId) {
+        // Update local state to be owner of new ID
+        data.value = res;
+        playEntry.value = 'owner';
+        sessionStorage.setItem('mg_play_entry', 'owner');
+        
+        if (!recordIds.value.includes(res.requestId)) {
+          recordIds.value = [res.requestId, ...recordIds.value];
+        }
+        showToast('已保存到我的剧情', 'success');
+        refreshShareMeta();
+      }
+    }
+  } catch (e) {
+    console.error(e);
+    showToast('保存失败', 'error');
+  }
 };
 
 const resolvedEnding = computed<Ending>(
@@ -698,6 +716,15 @@ const copyJson = async () => {
               >
                 <div class="absolute inset-0 bg-white/5 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
                 <span class="relative z-10">重新生成</span>
+              </button>
+
+              <button
+                @click="handleSave"
+                class="group relative inline-flex items-center justify-center px-6 py-3 rounded-xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-lg transition-all overflow-hidden w-full md:w-auto"
+              >
+                <div class="absolute inset-0 bg-white/5 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                <Save class="w-4 h-4 mr-2 relative z-10" />
+                <span class="relative z-10">保存剧情</span>
               </button>
 
               <div class="hidden md:block h-8 w-px bg-white/10 mx-2"></div>

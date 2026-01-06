@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useStorage } from '@vueuse/core';
-import { ArrowLeft, ChevronRight, Home as HomeIcon, X } from 'lucide-vue-next';
+import { ArrowLeft, ChevronRight, Home as HomeIcon, Pencil, X } from 'lucide-vue-next';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useGameState } from '../hooks/useGameState';
@@ -241,6 +241,10 @@ const goHome = () => {
   
   navigationError.value = '';
   router.push('/');
+};
+
+const goDesign = () => {
+  router.push('/design');
 };
 
 const confirmGoHomeOpen = ref(false);
@@ -800,6 +804,11 @@ const handleAvatarClick = (agent: Character) => {
             <button v-if="historyStack.length > 0" @click="handleBack" class="bg-black/40 backdrop-blur-md border border-white/10 hover:border-purple-500/50 text-white/70 hover:text-white px-4 py-2 rounded-lg transition-all text-sm flex items-center gap-2 group">
               <ArrowLeft class="w-4 h-4" />
               <span class="hidden md:inline">返回上一步</span>
+            </button>
+            
+            <button @click="goDesign" class="bg-black/40 backdrop-blur-md border border-white/10 hover:border-purple-500/50 text-white/70 hover:text-white px-4 py-2 rounded-lg transition-all text-sm flex items-center gap-2 group">
+              <Pencil class="w-4 h-4" />
+              <span class="hidden md:inline">设计</span>
             </button>
 
             <button @click="openConfirmGoHome" class="relative bg-black/40 backdrop-blur-md border border-white/10 hover:border-purple-500/50 text-white/80 hover:text-white px-5 py-2.5 rounded-xl transition-all text-sm flex items-center gap-2 group overflow-hidden shadow-[0_0_10px_rgba(0,0,0,0.5)] hover:shadow-[0_0_20px_rgba(168,85,247,0.4)]">

@@ -98,9 +98,6 @@ onMounted(async () => {
             ],
       language: params.language,
       size: params.size,
-      apiKey: params.apiKey,
-      baseUrl: params.baseUrl,
-      model: params.model,
     };
 
     // Clear the stored params after reading
@@ -114,15 +111,9 @@ onMounted(async () => {
   } catch (e) {
     if (e instanceof ApiError) {
       // Show detailed error information
-      if (e.code === 'API_KEY_REQUIRED') {
-        error.value = '需要配置 API Key，请使用您自己的 API Key';
-        errorCode.value = 'API_KEY_REQUIRED';
-      } else if (e.code === 'TOO_MANY_REQUESTS') {
-        error.value = 'API 额度已用完，请使用您自己的 API Key';
+      if (e.code === 'TOO_MANY_REQUESTS') {
+        error.value = '服务器繁忙，请稍后重试';
         errorCode.value = 'TOO_MANY_REQUESTS';
-      } else if (e.code === 'INVALID_BASE_URL') {
-        error.value = 'API 地址无效，请检查设置';
-        errorCode.value = 'INVALID_BASE_URL';
       } else {
         // Show the actual error message from backend
         error.value = e.message || `生成失败 (${e.status})`;

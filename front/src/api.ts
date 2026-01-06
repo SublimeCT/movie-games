@@ -31,9 +31,6 @@ export interface GenerateRequest {
   characters?: CharacterInput[];
   language?: string;
   size?: '1024x1024' | '864x1152' | '1152x864';
-  apiKey?: string;
-  baseUrl?: string;
-  model?: string;
 }
 
 // 统一 API 响应格式
@@ -311,9 +308,6 @@ export async function expandSynopsis(
   currentSynopsis?: string,
   genre?: string[],
   language?: string,
-  apiKey?: string,
-  baseUrl?: string,
-  model?: string,
 ): Promise<string> {
   const response = await fetch(`${API_BASE}/expand/worldview`, {
     method: 'POST',
@@ -323,9 +317,6 @@ export async function expandSynopsis(
       synopsis: currentSynopsis,
       genre,
       language,
-      apiKey,
-      baseUrl,
-      model,
     }),
   });
 
@@ -338,9 +329,6 @@ export async function expandCharacter(
   existingCharacters: CharacterInput[],
   genre?: string[],
   language?: string,
-  apiKey?: string,
-  baseUrl?: string,
-  model?: string,
 ): Promise<CharacterInput[]> {
   const response = await fetch(`${API_BASE}/expand/character`, {
     method: 'POST',
@@ -351,9 +339,6 @@ export async function expandCharacter(
       existingCharacters,
       genre,
       language,
-      apiKey,
-      baseUrl,
-      model,
     }),
   });
 

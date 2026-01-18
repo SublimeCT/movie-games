@@ -11,6 +11,11 @@
 - 后端启动会自动执行 SQLx migrations
 - 已经应用到数据库的迁移文件视为不可变；任何结构变更必须新增迁移文件，禁止修改已应用迁移
 - 若出现 `VersionMismatch`，必须通过“恢复旧迁移文件原内容 + 新增迁移承载变更”修复；`MOVIE_GAMES_ALLOW_MIGRATE_VERSION_MISMATCH=1` 仅用于应急排障，不作为长期方案
+- **文档要求**:
+  - `README.md` 必须包含详细的前后端部署指南：
+    - 前端：`pnpm build` 构建及 Nginx 反向代理配置示例。
+    - 后端：`cargo build --release` 构建、环境变量配置、以及**手动创建 `dict/dict.txt`** 的明确步骤（强调生产环境无法自动从 Cargo Registry 获取词库）。
+
 - 后端敏感内容过滤基于 `sensitive-rs`（不允许硬编码词库）：
   - 必须启用 `sensitive-rs` 的默认词库（与 `Filter::with_default_dict()` 一致的 `dict/dict.txt`）
   - 默认词库加载顺序：优先 `SENSITIVE_DEFAULT_DICT_PATH`，否则尝试运行目录 `dict/dict.txt`，否则尝试从本机 Cargo registry 自动定位；若仍失败则启动失败
@@ -71,6 +76,7 @@
     *   **自动回填优化**: 当用户从游戏页（如分享链接游玩后）返回首页时，若存在活跃的 `gameData`，首页会自动将该游戏的元数据（主题/简介/类型）回填到输入框，方便用户基于当前游戏进行二次创作或修改。
     *   支持“导入并保存”：会调用后端 `POST /import` 新增一条数据库记录并返回 `requestId`；请求体会同时包含“首页填写信息 + 导入 JSON 全量数据”（合并后提交）。主题允许直接来自导入 JSON（若两者都缺失则报错）。
     *   **帮助 (Help)**: 显示设计理念和操作技巧。
+    *   **GitHub 链接**: 跳转至 GitHub 仓库。
 
 **代码级差异说明**:
 *   **自由模式 (Free Mode)**: 代码中定义了 `mode` 变量 (默认 'wizard') 和 `freeInput` 变量，但在 UI 模板中 **完全没有渲染** 自由模式的输入框或切换按钮。向导模式表单是无条件显示的。因此，自由模式在当前版本中 **不可用**。

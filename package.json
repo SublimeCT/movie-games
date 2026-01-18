@@ -2,6 +2,10 @@
   "name": "movie-games",
   "version": "1.0.0",
   "description": "AI 互动电影游戏生成器",
+  "repository": {
+    "url": "https://github.com/SublimeCT/movie-games",
+    "type": "github"
+  },
   "scripts": {
     "dev:frontend": "cd front && pnpm dev",
     "dev:backend": "cd server && cargo run",

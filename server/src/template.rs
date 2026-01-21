@@ -1,196 +1,7 @@
-use serde::{Deserialize, Deserializer};
-use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::api_types::CharacterInput;
-use crate::types::{self, MovieTemplate};
-
-fn deserialize_option_string_or_vec<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OptionStringOrVec {
-        String(String),
-        Vec(Vec<String>),
-    }
-
-    let opt: Option<OptionStringOrVec> = Option::deserialize(deserializer)?;
-    match opt {
-        Some(OptionStringOrVec::String(s)) => Ok(Some(s)),
-        Some(OptionStringOrVec::Vec(v)) => Ok(Some(v.join("\n"))),
-        None => Ok(None),
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MovieTemplateLite {
-    title: Option<String>,
-    meta: Option<MetaInfoLite>,
-    nodes: Option<HashMap<String, StoryNodeLiteOrString>>,
-    characters: Option<HashMap<String, CharacterLite>>,
-    endings: Option<HashMap<String, types::Ending>>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MetaInfoLite {
-    logline: Option<String>,
-    synopsis: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_string_or_vec")]
-    genre: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CharacterLite {
-    id: Option<String>,
-    name: Option<String>,
-    gender: Option<String>,
-    age: Option<Value>,
-    role: Option<String>,
-    background: Option<String>,
-    avatar_path: Option<String>,
-    description: Option<String>,
-}
-
-impl From<CharacterLite> for types::Character {
-    fn from(lite: CharacterLite) -> Self {
-        types::Character {
-            id: lite.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-            name: lite.name.unwrap_or_else(|| "Unknown".to_string()),
-            gender: lite.gender.unwrap_or_else(|| "Unknown".to_string()),
-            age: lite
-                .age
-                .and_then(|v| v.as_u64().map(|n| n as u32))
-                .unwrap_or(0),
-            role: lite.role.unwrap_or_default(),
-            background: lite.background.or(lite.description).unwrap_or_default(),
-            avatar_path: lite.avatar_path,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum StoryNodeLiteOrString {
-    Node(StoryNodeLite),
-    // Fallback for cases where node is just a string content
-    String(String),
-    // Fallback for empty object or null
-    Empty {},
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StoryNodeLite {
-    id: Option<String>,
-    node_id: Option<String>,
-    #[serde(alias = "text")]
-    content: Option<String>, // Support 'text' as alias for 'content'
-    ending_key: Option<String>,
-    level: Option<u32>,
-    characters: Option<Vec<String>>,
-    choices: Option<Vec<ChoiceLite>>,
-}
-
-fn convert_node_lite(key: String, lite: StoryNodeLite) -> types::StoryNode {
-    types::StoryNode {
-        id: lite.id.or(lite.node_id).unwrap_or(key),
-        content: lite.content.unwrap_or_else(|| "...".to_string()),
-        ending_key: lite.ending_key,
-        level: lite.level,
-        characters: lite.characters,
-        choices: lite
-            .choices
-            .map(|choices| choices.into_iter().map(|c| c.into()).collect())
-            .unwrap_or_default(),
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ChoiceLite {
-    text: Option<String>,
-    next_node_id: Option<String>,
-    #[serde(default)]
-    affinity_effect: Option<types::AffinityEffect>,
-}
-
-impl From<ChoiceLite> for types::Choice {
-    fn from(lite: ChoiceLite) -> Self {
-        types::Choice {
-            text: lite.text.unwrap_or_else(|| "Continue".to_string()),
-            next_node_id: lite.next_node_id.unwrap_or_else(|| "END".to_string()),
-            affinity_effect: lite.affinity_effect,
-        }
-    }
-}
-
-pub(crate) fn convert_lite_to_full(lite: MovieTemplateLite, language: &str) -> MovieTemplate {
-    MovieTemplate {
-        project_id: uuid::Uuid::new_v4().to_string(),
-        title: lite.title.unwrap_or_else(|| "Untitled Project".to_string()),
-        version: "1.0.1".to_string(),
-        owner: "User".to_string(),
-        meta: types::MetaInfo {
-            logline: lite
-                .meta
-                .as_ref()
-                .and_then(|m| m.logline.clone())
-                .unwrap_or_default(),
-            synopsis: lite
-                .meta
-                .as_ref()
-                .and_then(|m| m.synopsis.clone())
-                .unwrap_or_default(),
-            target_runtime_minutes: 0,
-            genre: lite
-                .meta
-                .as_ref()
-                .and_then(|m| m.genre.clone())
-                .unwrap_or_default(),
-            language: language.to_string(),
-        },
-        background_image_base64: None,
-        nodes: lite
-            .nodes
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(k, v)| match v {
-                StoryNodeLiteOrString::Node(node) => Some((k.clone(), convert_node_lite(k, node))),
-                StoryNodeLiteOrString::String(s) => {
-                    if s.trim().is_empty() {
-                        None
-                    } else {
-                        Some((
-                            k.clone(),
-                            types::StoryNode {
-                                id: k,
-                                content: s,
-                                ending_key: None,
-                                level: None,
-                                characters: None,
-                                choices: Vec::new(),
-                            },
-                        ))
-                    }
-                }
-                StoryNodeLiteOrString::Empty {} => None,
-            })
-            .collect(),
-        characters: lite
-            .characters
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(k, v)| (k, v.into()))
-            .collect(),
-        endings: lite.endings.unwrap_or_default(),
-        provenance: Default::default(),
-    }
-}
+use crate::types::{self, MovieTemplate, Story};
 
 pub(crate) fn normalize_character_ids(template: &mut MovieTemplate) {
     // Rebuild characters map with name as key (as per user requirement)
@@ -828,11 +639,15 @@ pub(crate) fn ensure_minimum_game_graph(
                         text: "回去，当面把话说清楚".to_string(),
                         next_node_id: "confront".to_string(), // use pure id
                         affinity_effect: None,
+                        trigger_flag: None,
+                        condition: None,
                     },
                     types::Choice {
                         text: "装作没看见，先离开".to_string(),
                         next_node_id: "escape".to_string(), // use pure id
                         affinity_effect: None,
+                        trigger_flag: None,
+                        condition: None,
                     },
                 ],
             },
@@ -851,11 +666,15 @@ pub(crate) fn ensure_minimum_game_graph(
                         text: "坚持边界".to_string(),
                         next_node_id: "ending_good".to_string(),
                         affinity_effect: None,
+                        trigger_flag: None,
+                        condition: None,
                     },
                     types::Choice {
                         text: "妥协退让".to_string(),
                         next_node_id: "ending_bad".to_string(),
                         affinity_effect: None,
+                        trigger_flag: None,
+                        condition: None,
                     },
                 ],
             },
@@ -874,6 +693,8 @@ pub(crate) fn ensure_minimum_game_graph(
                         text: "回家休息".to_string(),
                         next_node_id: "ending_neutral".to_string(),
                         affinity_effect: None,
+                        trigger_flag: None,
+                        condition: None,
                     },
                 ],
             },
@@ -883,3 +704,120 @@ pub(crate) fn ensure_minimum_game_graph(
 
 // REMOVED: enforce_request_character_consistency and ensure_request_characters_present
 // because they were unused and user requested cleanup.
+
+/// 将 Story 转换为 MovieTemplate
+/// 
+/// # 参数
+/// * `story` - 完整的 Story 结构
+/// * `project_id` - 项目 ID
+/// * `owner` - 所有者
+/// 
+/// # 返回
+/// 转换后的 MovieTemplate
+pub(crate) fn convert_story_to_template(story: Story, project_id: String, owner: String) -> MovieTemplate {
+    let mut template = MovieTemplate {
+        project_id,
+        title: "Generated Story".to_string(), // Will be updated if available
+        version: "1.0.0".to_string(),
+        owner,
+        meta: types::MetaInfo::default(),
+        background_image_base64: None,
+        nodes: HashMap::new(),
+        endings: HashMap::new(),
+        characters: HashMap::new(),
+        provenance: types::Provenance {
+            created_by: "AI".to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        },
+        flags: story.blueprint.flags.clone(),
+    };
+
+    // 1. Endings
+    for (k, info) in story.blueprint.endings {
+        let key = if k.starts_with("ENDING_") { k.clone() } else { format!("ENDING_{}", k) };
+        template.endings.insert(key, types::Ending {
+            r#type: "neutral".to_string(), // Default, maybe infer from key?
+            description: info.content,
+        });
+    }
+
+    // 2. Characters
+    // We assume characters are already populated in Story (Blueprint StartNode characters?)
+    // Actually, Blueprint has `start_node.characters`. But we should use the ones from request or infer.
+    // The generation process should have populated character names.
+    // We will create basic Character entries for them.
+    let mut all_characters: std::collections::HashSet<String> = std::collections::HashSet::new();
+    all_characters.extend(story.blueprint.start_node.characters.clone());
+
+    // 3. Nodes
+    let mut global_level = 1;
+    for act_idx in 0..story.act_list.len() {
+        let act = &story.act_list[act_idx];
+        for layer_idx in 0..act.len() {
+            let layer = &act[layer_idx];
+            for node in layer {
+                // Collect characters
+                all_characters.extend(node.characters.clone());
+
+                let mut choices = Vec::new();
+                for c in &node.choices {
+                    let (next_id, condition) = match &c.next_node_id {
+                        types::NextNodeId::Simple(id) => (id.clone(), None),
+                        types::NextNodeId::Conditional(cond) => (
+                            cond.true_id.clone(),
+                            Some(types::ChoiceCondition {
+                                check_flag: cond.check_flag.clone(),
+                                expected_value: true,
+                                fallback_node_id: cond.false_id.clone(),
+                            }),
+                        ),
+                    };
+
+                    // Rename L1N1 -> start
+                    let final_next_id = if next_id == "L1N1" { "start".to_string() } else { next_id };
+                    let final_condition = condition.map(|mut cond| {
+                        if cond.fallback_node_id == "L1N1" {
+                            cond.fallback_node_id = "start".to_string();
+                        }
+                        cond
+                    });
+
+                    choices.push(types::Choice {
+                        text: c.content.clone(),
+                        next_node_id: final_next_id,
+                        affinity_effect: None,
+                        trigger_flag: c.trigger_flag.clone(),
+                        condition: final_condition,
+                    });
+                }
+
+                let id = if node.id == "L1N1" { "start".to_string() } else { node.id.clone() };
+                
+                template.nodes.insert(id.clone(), types::StoryNode {
+                    id,
+                    content: node.content.clone(),
+                    ending_key: None, // Nodes in LDAG are not endings themselves usually, but point to endings.
+                    level: Some(global_level),
+                    characters: Some(node.characters.clone()),
+                    choices,
+                });
+            }
+            global_level += 1;
+        }
+    }
+
+    // Populate characters map
+    for name in all_characters {
+        template.characters.insert(name.clone(), types::Character {
+            id: name.clone(),
+            name: name.clone(),
+            gender: "Unknown".to_string(),
+            age: 0,
+            role: "Character".to_string(),
+            background: "".to_string(),
+            avatar_path: None,
+        });
+    }
+
+    template
+}

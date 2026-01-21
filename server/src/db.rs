@@ -25,7 +25,8 @@ pub(crate) async fn init_db(db: &PgPool) -> Result<(), sqlx::Error> {
     match result {
         Ok(()) => Ok(()),
         Err(e) => match e {
-            sqlx::migrate::MigrateError::VersionMismatch(_version) => {
+            sqlx::migrate::MigrateError::VersionMismatch(_version)
+            | sqlx::migrate::MigrateError::VersionMissing(_version) => {
                 let allow = std::env::var("MOVIE_GAMES_ALLOW_MIGRATE_VERSION_MISMATCH")
                     .unwrap_or_else(|_| "0".to_string());
                 if allow.trim() == "1" {

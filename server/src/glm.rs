@@ -6,6 +6,9 @@ use url::Url;
 const API_URL: &str = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 const DEFAULT_MODEL: &str = "glm-4.6v-flash";
 
+pub const DEEPSEEK_API_URL: &str = "https://api.deepseek.com/chat/completions";
+pub const DEEPSEEK_DEFAULT_MODEL: &str = "deepseek-chat";
+
 pub const GLM_LIMIT_FRIENDLY_MESSAGE: &str =
     "GLM 已达最大调用频率, 请填写自己的 API Key 并再次尝试";
 
@@ -46,6 +49,11 @@ fn glm_api_key() -> Result<String, String> {
     std::env::var("GLM_API_KEY")
         .or_else(|_| std::env::var("BIGMODEL_API_KEY"))
         .map_err(|_| "Missing GLM_API_KEY".to_string())
+}
+
+pub fn deepseek_api_key() -> Result<String, String> {
+    std::env::var("DEEPSEEK_API_KEY")
+        .map_err(|_| "Missing DEEPSEEK_API_KEY".to_string())
 }
 
 fn resolve_glm_api_key(override_key: Option<String>) -> Result<String, String> {
@@ -131,6 +139,21 @@ struct MessageContent {
     content: String,
 }
 
+use std::fs::OpenOptions;
+use std::io::Write;
+
+pub fn log_to_file(msg: &str) {
+    let _ = std::fs::create_dir_all("logs");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("logs/server.log")
+        .unwrap_or_else(|_| std::fs::File::create("logs/server.log").unwrap());
+    
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let _ = writeln!(file, "[{}] {}", timestamp, msg);
+}
+
 #[allow(dead_code)]
 pub async fn call_glm_with_api_key(
     prompt: String,
@@ -150,6 +173,11 @@ pub async fn call_glm_with_api_key(
     let api_key = resolve_glm_api_key(api_key)?;
     let endpoint = resolve_glm_endpoint(base_url)?;
     let model = model.unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    
+    let log_start = format!("Sending request to GLM/DeepSeek...\n  -> Endpoint: {}\n  -> Model: {}\n  -> Prompt len: {}", endpoint, model, prompt.len());
+    println!("{}", log_start);
+    log_to_file(&log_start);
+    log_to_file(&format!("PROMPT:\n{}", prompt));
 
     let request_body = ChatRequest {
         model,
@@ -176,7 +204,6 @@ pub async fn call_glm_with_api_key(
         stream: false,
     };
 
-    println!("Sending request to GLM (Prompt len: {})...", prompt.len());
     let start = std::time::Instant::now();
 
     let response = client
@@ -189,11 +216,15 @@ pub async fn call_glm_with_api_key(
         .map_err(|e| format!("Request failed: {}", e))?;
 
     let duration = start.elapsed();
-    println!("GLM Request took: {:?}", duration);
+    let log_duration = format!("GLM Request took: {:?}", duration);
+    println!("{}", log_duration);
+    log_to_file(&log_duration);
 
     if !response.status().is_success() {
         let text = response.text().await.unwrap_or_default();
-        println!("GLM Error Body: {}", text);
+        let log_err = format!("GLM Error Body: {}", text);
+        println!("{}", log_err);
+        log_to_file(&log_err);
 
         if is_rate_limit_error(&text) {
             return Err(format!(
@@ -214,11 +245,15 @@ pub async fn call_glm_with_api_key(
         .await
         .map_err(|e| format!("Failed to read response text: {}", e))?;
 
+    log_to_file(&format!("RAW RESPONSE:\n{}", text_response));
+
     // Try to parse as generic JSON first to check for "error" field
     // (GLM sometimes returns 200 OK with "error" in body)
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text_response) {
         if json_value.get("error").is_some() {
-            println!("GLM returned 200 OK but with error body: {}", text_response);
+            let log_logic_err = format!("GLM returned 200 OK but with error body: {}", text_response);
+            println!("{}", log_logic_err);
+            log_to_file(&log_logic_err);
 
             // Check for rate limit in this body
             if is_rate_limit_error(&text_response) {

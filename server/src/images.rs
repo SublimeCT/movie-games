@@ -7,6 +7,7 @@ use serde_json::json;
 use crate::api_types::{CharacterInput, GenerateRequest};
 use crate::types::MovieTemplate;
 
+#[allow(dead_code)]
 pub(crate) fn pick_background_prompt(req: &GenerateRequest, template: &MovieTemplate) -> String {
     let from_template = template.meta.synopsis.trim();
     if !from_template.is_empty() {
@@ -45,6 +46,7 @@ fn svg_to_data_uri(svg: &str) -> String {
     format!("data:image/svg+xml;base64,{}", b64)
 }
 
+#[allow(dead_code)]
 pub(crate) fn fallback_background_data_uri(title: &str, synopsis: &str) -> String {
     let seed = simple_hash_u32(&format!("{}::{}", title.trim(), synopsis.trim()));
     let h1 = (seed % 360) as i32;
@@ -169,12 +171,14 @@ pub(crate) fn ensure_avatar_fallbacks(
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) struct ProtagonistSpec {
     name: String,
     description: String,
     gender: String,
 }
 
+#[allow(dead_code)]
 fn select_protagonists(req_chars: Option<&Vec<CharacterInput>>) -> Vec<ProtagonistSpec> {
     let Some(req_chars) = req_chars else {
         return vec![];
@@ -201,6 +205,7 @@ fn select_protagonists(req_chars: Option<&Vec<CharacterInput>>) -> Vec<Protagoni
         .collect()
 }
 
+#[allow(dead_code)]
 pub(crate) fn normalize_cogview_size(raw: Option<&str>) -> String {
     match raw.unwrap_or("").trim() {
         "1024x1024" => "1024x1024".to_string(),
@@ -210,6 +215,7 @@ pub(crate) fn normalize_cogview_size(raw: Option<&str>) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) async fn generate_scene_background_base64(
     client: &Client,
     synopsis: &str,
@@ -308,6 +314,7 @@ Hard constraints (must follow):\n\
     Ok(format!("data:{};base64,{}", content_type, b64))
 }
 
+#[allow(dead_code)]
 pub(crate) async fn generate_protagonist_avatar_base64(
     client: &Client,
     template: &MovieTemplate,
@@ -427,35 +434,4 @@ Hard constraints (must follow):\n\
     Ok(format!("data:{};base64,{}", content_type, b64))
 }
 
-pub(crate) async fn maybe_attach_generated_avatars(
-    client: &Client,
-    template: &mut MovieTemplate,
-    req_chars: Option<&Vec<CharacterInput>>,
-    language_tag: &str,
-    api_key: &str,
-) {
-    let protagonists = select_protagonists(req_chars);
-    if protagonists.len() == 1 {
-        if let Some(spec) = protagonists.first() {
-            if let Ok(img) =
-                generate_protagonist_avatar_base64(client, template, spec, language_tag, api_key)
-                    .await
-            {
-                attach_avatar_to_template(template, &spec.name, img);
-            }
-        }
-    } else if protagonists.len() >= 2 {
-        let a = protagonists[0].clone();
-        let b = protagonists[1].clone();
-        let (ra, rb) = tokio::join!(
-            generate_protagonist_avatar_base64(client, template, &a, language_tag, api_key),
-            generate_protagonist_avatar_base64(client, template, &b, language_tag, api_key)
-        );
-        if let Ok(img) = ra {
-            attach_avatar_to_template(template, &a.name, img);
-        }
-        if let Ok(img) = rb {
-            attach_avatar_to_template(template, &b.name, img);
-        }
-    }
-}
+

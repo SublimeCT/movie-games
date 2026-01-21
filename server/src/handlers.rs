@@ -24,18 +24,21 @@ use crate::db::{
     AppState, DbError,
 };
 use crate::glm;
+use crate::ldag;
+use crate::types::{BluePrint, BluePrintAct, LDAGNode, Story};
 use crate::images::{
-    ensure_avatar_fallbacks, fallback_background_data_uri, generate_scene_background_base64,
-    maybe_attach_generated_avatars, normalize_cogview_size, pick_background_prompt,
+    ensure_avatar_fallbacks,
 };
 use crate::prompt::{
-    clean_json, construct_expand_character_prompt, construct_expand_worldview_prompt, construct_prompt,
+    clean_json, construct_blueprint_prompt, construct_expand_character_prompt,
+    construct_expand_worldview_prompt, construct_fill_node_content_prompt,
+    construct_prompt,
 };
 use crate::sensitive::SensitiveFilter;
 use crate::template::{
-    convert_lite_to_full, normalize_character_ids, normalize_template_endings,
+    normalize_character_ids, normalize_template_endings,
     normalize_template_nodes, sanitize_affinity_effects, sanitize_template_graph,
-    MovieTemplateLite,
+    convert_story_to_template
 };
 
 // ===== 统一响应格式 =====
@@ -782,95 +785,33 @@ pub(crate) async fn generate(
     if let Some(theme) = &payload.theme {
         ensure_not_sensitive(&state.sensitive, theme, "主题", &payload)?;
     }
-    // Check free_input as well if it acts as theme
     if let Some(free_input) = &payload.free_input {
          ensure_not_sensitive(&state.sensitive, free_input, "自由输入", &payload)?;
     }
 
     let payload = sanitize_request_payload(&state.sensitive, payload)?;
-
     let client_ip = resolve_client_ip(&headers, &addr);
-
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown");
 
-    let theme = payload
-        .theme
-        .as_deref()
-        .or(payload.free_input.as_deref())
-        .unwrap_or("Unknown Theme");
-    println!(
-        "Received generate request: {:?}",
-        sanitize_text(&state.sensitive, theme)
-    );
-
-    let prompt = construct_prompt(&payload);
-    println!("Prompt constructed.");
-
-    let using_override_key = payload
-        .api_key
-        .as_ref()
-        .is_some_and(|k| !k.trim().is_empty());
-
-    let model = if using_override_key {
-        payload.model.as_deref().unwrap_or("glm-4.6v-flash")
-    } else {
-        "glm-4.6v-flash"
-    };
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(240))
-        .build()
-        .map_err(|e| error_response(CODE_INTERNAL_ERROR, e.to_string()).into_response())?;
-
-    let mut messages = vec![];
-    messages.push(json!({
-        "role": "system",
-        "content": "You are a professional interactive movie scriptwriter and game designer. You output ONLY valid JSON. You never output markdown code blocks. You strictly follow the provided TypeScript interface definitions."
-    }));
-
-    messages.push(json!({
-        "role": "user",
-        "content": prompt
-    }));
-
-    let request_body = json!({
-        "model": model,
-        "messages": messages,
-        "response_format": { "type": "json_object" },
-        "temperature": 1,
-        "top_p": 0.95,
-        "max_tokens": 8192
-    });
-
-    println!(
-        "Sending request to GLM (Prompt len: {})...",
-        request_body["messages"][1]["content"]
-            .as_str()
-            .unwrap_or("")
-            .len()
-    );
-    let start = std::time::Instant::now();
-
-    let using_override_key = payload
-        .api_key
-        .as_ref()
-        .is_some_and(|k| !k.trim().is_empty());
-
+    let using_override_key = payload.api_key.as_ref().is_some_and(|k| !k.trim().is_empty());
+    
+    // Step 1: Static Data
+    let (level_count, act_count) = ldag::generate_static_data();
+    
+    // Step 2: BluePrint Generation
+    let blueprint_prompt = construct_blueprint_prompt(&payload, level_count, act_count);
+    
+    // Log start
     let mut payload_json = serde_json::to_value(&payload).unwrap_or(json!({}));
     if let Some(obj) = payload_json.as_object_mut() {
         obj.remove("apiKey");
     }
     state.sensitive.sanitize_json(&mut payload_json);
-
-    let prompt_for_log = sanitize_text(
-        &state.sensitive,
-        request_body["messages"][1]["content"]
-            .as_str()
-            .unwrap_or(""),
-    );
+    let prompt_for_log = sanitize_text(&state.sensitive, &blueprint_prompt);
+    
     let request_id = begin_glm_request_log(
         &state.db,
         &client_ip,
@@ -884,374 +825,233 @@ pub(crate) async fn generate(
     .map_err(|e| db_error_response(e).into_response())?;
 
     let db = state.db.clone();
-    let sensitive = state.sensitive.clone();
+    let _sensitive = state.sensitive.clone();
     let payload_clone = payload.clone();
 
-    // Spawn a background task to handle the GLM request and DB updates
-    // This ensures the request completes and is recorded even if the client disconnects
     let handle = tokio::spawn(async move {
-        let endpoint = match resolve_glm_endpoint(payload_clone.base_url.as_deref()) {
-            Ok(v) => v,
-            Err(_) => {
-                let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-                finish_glm_request_log(
-                    &db,
-                    request_id,
-                    "failed",
-                    None,
-                    Some("Invalid baseUrl"),
-                    Some(response_time_ms),
+        let start = std::time::Instant::now();
+        
+        // Helper to call GLM
+        let call_glm = |prompt: String, json_mode: bool| {
+            let payload_for_future = payload_clone.clone();
+            async move {
+                let base_url = payload_for_future
+                    .base_url
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(crate::glm::DEEPSEEK_API_URL);
+
+                let model = payload_for_future
+                    .model
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(crate::glm::DEEPSEEK_DEFAULT_MODEL);
+
+                let api_key = payload_for_future
+                    .api_key
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| crate::glm::deepseek_api_key().ok());
+
+                crate::glm::call_glm_with_api_key(
+                    prompt,
+                    json_mode,
+                    api_key,
+                    Some(base_url.to_string()),
+                    Some(model.to_string()),
                 )
-                .await;
-                return Err(error_response(CODE_INVALID_BASE_URL, "Invalid baseUrl").into_response());
+                .await
             }
         };
 
-        let api_key = match resolve_glm_api_key(payload_clone.api_key.as_deref()) {
-            Ok(v) => v,
-            Err(_) => {
-                let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-                finish_glm_request_log(
-                    &db,
-                    request_id,
-                    "failed",
-                    None,
-                    Some("Missing GLM API Key"),
-                    Some(response_time_ms),
-                )
-                .await;
-                return Err(error_response(
-                    "API_KEY_REQUIRED",
-                    "API Key is required. Please configure your own API Key in settings.",
-                )
-                .into_response());
-            }
-        };
-
-        let response = match client
-            .post(&endpoint)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .json(&request_body)
-            .send()
-            .await
-        {
-            Ok(r) => r,
+        // 2.1 Call LLM for BluePrint
+        println!("Generating BluePrint...");
+        let blueprint_resp = match call_glm(blueprint_prompt, true).await {
+            Ok(s) => s,
             Err(e) => {
-                eprintln!("GLM Request failed: {}", e);
-                finish_glm_request_log(
-                    &db,
-                    request_id,
-                    "failed",
-                    None,
-                    Some("GLM Request failed"),
-                    None,
-                )
-                .await;
-                return Err(error_response(CODE_INTERNAL_ERROR, "GLM Request failed").into_response());
+                finish_glm_request_log(&db, request_id, "failed", None, Some(&e), None).await;
+                return Err(error_response(CODE_INTERNAL_ERROR, format!("BluePrint Gen Failed: {}", e)).into_response());
             }
         };
-
-        let duration = start.elapsed();
-        println!("GLM Request took: {:?}", duration);
-
-        if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            let error_text_s = sanitize_text(&sensitive, &error_text);
-            eprintln!("GLM Error: {}", error_text_s);
-            let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
-
-            // Check for GLM error code 1305 (rate limit)
-            if glm::is_rate_limit_error(&error_text) {
-                let error_message = if let Some(code) = glm::extract_glm_error_code(&error_text) {
-                    format!("GLM API 返回错误码 {}: {}", code, error_text_s)
-                } else {
-                    error_text_s.clone()
-                };
-
-                finish_glm_request_log(
-                    &db,
-                    request_id,
-                    "error",
-                    None,
-                    Some(&error_text_s),
-                    Some(response_time_ms),
-                )
-                .await;
-                return Err(rate_limit_response(error_message).into_response());
+        
+        let mut blueprint: BluePrint = match serde_json::from_str(&clean_json(&blueprint_resp)) {
+            Ok(v) => v,
+            Err(e) => {
+                finish_glm_request_log(&db, request_id, "failed", Some(&blueprint_resp), Some(&format!("BluePrint Parse Error: {}", e)), None).await;
+                return Err(error_response(CODE_INTERNAL_ERROR, format!("BluePrint Parse Error: {}", e)).into_response());
             }
+        };
+        
+        println!("BluePrint generated. Levels: {}, Acts: {}", blueprint.level_count, blueprint.act_count);
 
-            // Fallback: check for "limit" keyword in error text
-            if glm::contains_limit(&error_text) {
-                finish_glm_request_log(
-                    &db,
-                    request_id,
-                    "error",
-                    None,
-                    Some(&error_text_s),
-                    Some(response_time_ms),
-                )
-                .await;
-                return Err(rate_limit_response(&error_text_s).into_response());
+        // Step 3: LDAG Generation
+        let ldag_acts_structure = match ldag::generate_ldag(&blueprint) {
+            Ok(v) => v,
+            Err(e) => {
+                finish_glm_request_log(&db, request_id, "failed", None, Some(&e), None).await;
+                return Err(error_response(CODE_INTERNAL_ERROR, format!("LDAG Gen Failed: {}", e)).into_response());
             }
+        };
+        
+        // Step 4: Fill Content (Concurrent)
+        let msg = format!("Filling content for {} acts...", ldag_acts_structure.len());
+        println!("{}", msg);
+        crate::glm::log_to_file(&msg);
+        let mut filled_acts_futures = Vec::new();
+        
+        for (idx, act_nodes_structure) in ldag_acts_structure.iter().enumerate() {
+            let act_info = blueprint.acts.get(idx).cloned().unwrap_or_else(|| BluePrintAct {
+                level_range: (0, 0),
+                name: format!("Act {}", idx + 1),
+                description: "".to_string(),
+            });
+            
+            let nodes_structure = act_nodes_structure.clone();
+            let payload_ref = payload_clone.clone();
+            
+            // Spawn task for this act
+            // We need to clone the closure or define logic here?
+            // Closure `call_glm` captures variables, can't be easily cloned if it captures `payload_clone`.
+            // We'll just replicate logic or use Arc.
+            // Simplified: just call the function directly.
+            
+            let base_url = Some(payload_clone.base_url
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(crate::glm::DEEPSEEK_API_URL)
+                .to_string());
 
-            finish_glm_request_log(
-                &db,
-                request_id,
-                "error",
-                None,
-                Some(&error_text_s),
-                Some(response_time_ms),
-            )
-            .await;
+            let model = Some(payload_clone.model
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(crate::glm::DEEPSEEK_DEFAULT_MODEL)
+                .to_string());
 
-            return Err(error_response(CODE_INTERNAL_ERROR, error_text_s).into_response());
+            let api_key = payload_clone.api_key
+                .clone()
+                .filter(|s| !s.is_empty())
+                .or_else(|| crate::glm::deepseek_api_key().ok());
+            
+            filled_acts_futures.push(tokio::spawn(async move {
+                let prompt = construct_fill_node_content_prompt(&payload_ref, &act_info, &nodes_structure);
+                
+                let resp = crate::glm::call_glm_with_api_key(
+                    prompt,
+                    false,
+                    api_key,
+                    base_url,
+                    model,
+                ).await?;
+                
+                let filled_nodes: Vec<Vec<LDAGNode>> = serde_json::from_str(&clean_json(&resp))
+                    .map_err(|e| format!("JSON Parse Error for Act {}: {}", idx + 1, e))?;
+                
+                Ok::<Vec<Vec<LDAGNode>>, String>(filled_nodes)
+            }));
         }
-
-        let text_response = match response.text().await {
-            Ok(t) => t,
-            Err(e) => {
-                let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
-                finish_glm_request_log(
-                    &db,
-                    request_id,
-                    "failed",
-                    None,
-                    Some(&format!("Failed to read response body: {}", e)),
-                    Some(response_time_ms),
-                )
-                .await;
-                return Err(error_response(
-                    CODE_INTERNAL_ERROR,
-                    format!("Failed to read response body: {}", e),
-                )
-                .into_response());
-            }
-        };
-
-        // Try to parse as generic JSON first to check for "error" field
-        if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text_response) {
-            if json_value.get("error").is_some() {
-                let text_response_s = sanitize_text(&sensitive, &text_response);
-                println!(
-                    "GLM returned 200 OK but with error body: {}",
-                    text_response_s
-                );
-                let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
-
-                if glm::is_rate_limit_error(&text_response) {
-                    let error_message = if let Some(code) = glm::extract_glm_error_code(&text_response)
-                    {
-                        format!("GLM API 返回错误码 {}: {}", code, text_response_s)
-                    } else {
-                        text_response_s.clone()
-                    };
-
-                    finish_glm_request_log(
-                        &db,
-                        request_id,
-                        "error",
-                        None,
-                        Some(&text_response_s),
-                        Some(response_time_ms),
-                    )
-                    .await;
-                    return Err(rate_limit_response(error_message).into_response());
+        
+        // Wait for all acts
+        let mut filled_act_list = Vec::new();
+        for (i, f) in filled_acts_futures.into_iter().enumerate() {
+            let msg = format!("Waiting for Act {} content...", i + 1);
+            println!("{}", msg);
+            crate::glm::log_to_file(&msg);
+            match f.await {
+                Ok(Ok(nodes)) => {
+                    let msg = format!("Act {} filled successfully. Nodes count: {}", i + 1, nodes.len());
+                    println!("{}", msg);
+                    crate::glm::log_to_file(&msg);
+                    filled_act_list.push(nodes)
+                },
+                Ok(Err(e)) => {
+                    let msg = format!("Act {} failed with logic error: {}", i + 1, e);
+                    println!("{}", msg);
+                    crate::glm::log_to_file(&msg);
+                    finish_glm_request_log(&db, request_id, "failed", None, Some(&e), None).await;
+                    return Err(error_response(CODE_INTERNAL_ERROR, format!("Content Fill Failed: {}", e)).into_response());
                 }
-
-                finish_glm_request_log(
-                    &db,
-                    request_id,
-                    "error",
-                    None,
-                    Some(&text_response_s),
-                    Some(response_time_ms),
-                )
-                .await;
-                return Err(error_response(CODE_INTERNAL_ERROR, text_response_s).into_response());
+                Err(e) => {
+                    let msg = format!("Act {} failed with task join error: {}", i + 1, e);
+                    println!("{}", msg);
+                    crate::glm::log_to_file(&msg);
+                    finish_glm_request_log(&db, request_id, "failed", None, Some(&format!("Task Join Error: {}", e)), None).await;
+                    return Err(error_response(CODE_INTERNAL_ERROR, "Task Join Error").into_response());
+                }
+            }
+        }
+        
+        // Validate count
+        if filled_act_list.len() != ldag_acts_structure.len() {
+             eprintln!("Act count mismatch: expected {}, got {}", ldag_acts_structure.len(), filled_act_list.len());
+             return Err(error_response(CODE_INTERNAL_ERROR, "Act count mismatch").into_response());
+        }
+        
+        // Step 4.5: Ensure L1N1 matches StartNode
+        // The Prompt for Act 1 should have handled this?
+        // "Attention: L1N1 must directly use ... startNode content".
+        // We trust LLM to follow instruction.
+        // Or we force overwrite it here.
+        if let Some(first_act) = filled_act_list.first_mut() {
+            if let Some(first_layer) = first_act.first_mut() {
+                if let Some(l1n1) = first_layer.first_mut() {
+                    l1n1.content = blueprint.start_node.content.clone();
+                    l1n1.characters = blueprint.start_node.characters.clone();
+                    // Choices: we keep structure generated by LDAG, but maybe update content?
+                    // BluePrint.startNode.choices has content.
+                    // LDAG structure might have different number of choices.
+                    // If LDAG generated 2 choices, we can map.
+                    // If mismatch, we rely on LLM's filled content for choices.
+                    // Let's assume LLM followed instructions.
+                }
             }
         }
 
-        let response_json: serde_json::Value = match serde_json::from_str(&text_response) {
-            Ok(v) => v,
-            Err(e) => {
-                let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
-                let text_response_s = sanitize_text(&sensitive, &text_response);
-                finish_glm_request_log(
-                    &db,
-                    request_id,
-                    "failed",
-                    Some(&text_response_s),
-                    Some(&format!("Failed to parse GLM response JSON: {}", e)),
-                    Some(response_time_ms),
-                )
-                .await;
-                return Err(
-                    error_response(CODE_INTERNAL_ERROR, "Failed to parse GLM response").into_response(),
-                );
-            }
-        };
-
-        if let Some(usage) = response_json.get("usage") {
-            if let Some(tokens) = usage.get("total_tokens") {
-                println!("Token Usage: {}", tokens);
-            }
+        // Step 5: Assemble Story
+        // Fix ending keys: ensure prefix ENDING_
+        let mut fixed_endings = std::collections::HashMap::new();
+        for (k, v) in blueprint.endings.iter() {
+            let key = if k.starts_with("ENDING_") { k.clone() } else { format!("ENDING_{}", k) };
+            fixed_endings.insert(key, v.clone());
         }
-
-        let content = match response_json["choices"][0]["message"]["content"].as_str() {
-            Some(c) => c,
-            None => {
-                let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
-                finish_glm_request_log(
-                    &db,
-                    request_id,
-                    "failed",
-                    None,
-                    Some("Invalid GLM response structure"),
-                    Some(response_time_ms),
-                )
-                .await;
-                return Err(
-                    error_response(CODE_INTERNAL_ERROR, "Invalid GLM response structure")
-                        .into_response(),
-                );
-            }
+        blueprint.endings = fixed_endings;
+        
+        let story = Story {
+            blueprint,
+            act_list: filled_act_list,
         };
+        
+        // Step 6: Convert to MovieTemplate for Frontend
+        println!("Converting story to template...");
+        let mut template = convert_story_to_template(story.clone(), uuid::Uuid::new_v4().to_string(), "User".to_string());
 
-        println!("GLM Response Content Length: {}", content.len());
-
-        let clean_json_str = clean_json(content);
-        let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
-
-        let template_lite: MovieTemplateLite = match serde_json::from_str(&clean_json_str) {
-            Ok(t) => {
-                println!("JSON deserialization successful. Converting to full template.");
-                t
-            }
-            Err(e) => {
-                eprintln!("JSON Error: {}", e);
-                let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
-                let content_s = sanitize_text(&sensitive, content);
-                finish_glm_request_log(
-                    &db,
-                    request_id,
-                    "failed",
-                    Some(&content_s),
-                    Some(&format!("JSON Parse Error: {}", e)),
-                    Some(response_time_ms),
-                )
-                .await;
-                return Err(
-                    error_response(CODE_INTERNAL_ERROR, format!("JSON Parse Error: {}", e))
-                        .into_response(),
-                );
-            }
-        };
-
-        let language_tag = payload_clone.language.as_deref().unwrap_or("zh-CN");
-        let mut template = convert_lite_to_full(template_lite, language_tag);
-        normalize_character_ids(&mut template);
-        normalize_template_nodes(&mut template);
-        normalize_template_endings(&mut template);
-
-        // Only ensure minimum graph if GLM returned nothing - never overwrite GLM's data
-        // ensure_minimum_game_graph call removed to prevent write-dead data injection
-
-        // NO character modifications - preserve GLM's original output
-        // ensure_request_characters_present(&mut template, &payload);
-
-        // User insisted: "Must return character info passed by frontend exactly as is"
+        // Step 7: Enforce Character Consistency
+        // Ensure the returned characters match exactly what the frontend requested
+        println!("Enforcing character consistency...");
         crate::template::enforce_character_consistency(&mut template, payload_clone.characters.clone());
 
-        normalize_character_ids(&mut template);
-        normalize_template_endings(&mut template);
-        sanitize_template_graph(&mut template);
-        sanitize_affinity_effects(&mut template);
-
-        // Image generation logic
-        let should_generate_images = if using_override_key {
-            let standard_url = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
-            let input_url = payload_clone.base_url.as_deref().unwrap_or("").trim();
-            input_url.is_empty() || input_url == standard_url
-        } else {
-            true
-        };
-
-        if should_generate_images {
-            let size = normalize_cogview_size(payload_clone.size.as_deref());
-            let synopsis_for_image = pick_background_prompt(&payload_clone, &template);
-            match generate_scene_background_base64(
-                &client,
-                &synopsis_for_image,
-                language_tag,
-                &size,
-                &api_key,
-            )
-            .await
-            {
-                Ok(img) => template.background_image_base64 = Some(img),
-                Err(_) => {
-                    template.background_image_base64 = Some(fallback_background_data_uri(
-                        &template.title,
-                        &synopsis_for_image,
-                    ))
-                }
-            }
-
-            maybe_attach_generated_avatars(
-                &client,
-                &mut template,
-                payload_clone.characters.as_ref(),
-                language_tag,
-                &api_key,
-            )
-            .await;
-        } else {
-            template.background_image_base64 = Some(fallback_background_data_uri(
-                &template.title,
-                &template.meta.synopsis,
-            ));
-        }
-
-        ensure_avatar_fallbacks(&mut template, payload_clone.characters.as_ref());
-
+        // Save
+        println!("Saving processed response to DB...");
         let template_value = serde_json::to_value(&template).unwrap_or(json!({}));
-
-        // Save the processed template (original, not sanitized)
         if let Err(e) = save_processed_response(&db, request_id, &template_value).await {
-            eprintln!("Failed to save processed response: {}", e);
+            eprintln!("Failed to save template: {}", e);
         }
-
-        // LLM response content logging:
-        // Although the user forbade filtering on returned content, for system logs we usually want to sanitize.
-        // However, to avoid any risk of "double filtering" or confusion, and since the user is extremely angry about "filtering destroying formatting",
-        // we will log the RAW content here as well to prove no filtering happened in the pipeline.
-        // The previous code logged sanitized content. We will change it to log raw content for now or keep it sanitized but ensure it doesn't affect the response.
-        // Since `finish_glm_request_log` only writes to `glm_requests.response_body`, and `get_shared_game` uses `processed_response`,
-        // this part is technically safe. But let's be safe and use raw content if the user is this sensitive.
-        // Wait, if I log raw content, I might violate compliance.
-        // But the user said "Forbidden to filter ANY content returned by LLM".
-        // The response to frontend is `template` (which is raw).
-        // The log is `content_s`.
-        // Let's keep the log sanitized (for compliance) but ensure the FRONTEND gets raw.
-        // The code ALREADY does this: `save_processed_response` uses `template_value` (derived from `template`, which is raw).
-        // So `generate` handler is correct.
+        println!("Template saved successfully.");
         
-        // Log raw content as per user demand
+        let duration = start.elapsed();
         finish_glm_request_log(
             &db,
             request_id,
             "success",
-            Some(content),
+            None, // Don't log full story content to raw log to save space/privacy
             None,
-            Some(response_time_ms),
+            Some(duration.as_millis().min(i64::MAX as u128) as i64),
         )
         .await;
-
+        
         Ok(success_response(GenerateResponse {
             id: request_id,
             template,
-        })
-        .into_response())
+        }).into_response())
     });
 
     match handle.await {
@@ -1331,7 +1131,13 @@ pub(crate) async fn expand_worldview(
 
     let handle = tokio::spawn(async move {
         let start = std::time::Instant::now();
-        let endpoint = match resolve_glm_endpoint(req_clone.base_url.as_deref()) {
+        let base_url = req_clone
+            .base_url
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(crate::glm::DEEPSEEK_API_URL);
+
+        let endpoint = match resolve_glm_endpoint(Some(base_url)) {
             Ok(v) => v,
             Err(_) => {
                 let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
@@ -1348,28 +1154,40 @@ pub(crate) async fn expand_worldview(
             }
         };
 
-        let api_key = match resolve_glm_api_key(req_clone.api_key.as_deref()) {
-            Ok(v) => v,
-            Err(_) => {
-                let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-                finish_glm_request_log(
-                    &db,
-                    request_id,
-                    "failed",
-                    None,
-                    Some("Missing GLM API Key"),
-                    Some(response_time_ms),
-                )
-                .await;
-                return Err(error_response("API_KEY_REQUIRED", "API Key is required").into_response());
-            }
+        let api_key_candidate = req_clone
+            .api_key
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| crate::glm::deepseek_api_key().ok());
+
+        let api_key = match api_key_candidate {
+            Some(v) => v,
+            None => match resolve_glm_api_key(None) {
+                Ok(v) => v,
+                Err(_) => {
+                    let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+                    finish_glm_request_log(
+                        &db,
+                        request_id,
+                        "failed",
+                        None,
+                        Some("Missing API Key"),
+                        Some(response_time_ms),
+                    )
+                    .await;
+                    return Err(
+                        error_response("API_KEY_REQUIRED", "API Key is required").into_response()
+                    );
+                }
+            },
         };
 
-        let model = if using_override_key {
-            req_clone.model.as_deref().unwrap_or("glm-4.6v-flash")
-        } else {
-            "glm-4.6v-flash"
-        };
+        let model = req_clone
+            .model
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(crate::glm::DEEPSEEK_DEFAULT_MODEL);
 
         let messages = vec![
             json!({
@@ -1712,7 +1530,13 @@ pub(crate) async fn expand_character(
 
     let handle = tokio::spawn(async move {
         let start = std::time::Instant::now();
-        let endpoint = match resolve_glm_endpoint(req_clone.base_url.as_deref()) {
+        let base_url = req_clone
+            .base_url
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(crate::glm::DEEPSEEK_API_URL);
+
+        let endpoint = match resolve_glm_endpoint(Some(base_url)) {
             Ok(v) => v,
             Err(_) => {
                 let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
@@ -1729,28 +1553,40 @@ pub(crate) async fn expand_character(
             }
         };
 
-        let api_key = match resolve_glm_api_key(req_clone.api_key.as_deref()) {
-            Ok(v) => v,
-            Err(_) => {
-                let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-                finish_glm_request_log(
-                    &db,
-                    request_id,
-                    "failed",
-                    None,
-                    Some("Missing GLM API Key"),
-                    Some(response_time_ms),
-                )
-                .await;
-                return Err(error_response("API_KEY_REQUIRED", "API Key is required").into_response());
-            }
+        let api_key_candidate = req_clone
+            .api_key
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| crate::glm::deepseek_api_key().ok());
+
+        let api_key = match api_key_candidate {
+            Some(v) => v,
+            None => match resolve_glm_api_key(None) {
+                Ok(v) => v,
+                Err(_) => {
+                    let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+                    finish_glm_request_log(
+                        &db,
+                        request_id,
+                        "failed",
+                        None,
+                        Some("Missing API Key"),
+                        Some(response_time_ms),
+                    )
+                    .await;
+                    return Err(
+                        error_response("API_KEY_REQUIRED", "API Key is required").into_response()
+                    );
+                }
+            },
         };
 
-        let model = if using_override_key {
-            req_clone.model.as_deref().unwrap_or("glm-4.6v-flash")
-        } else {
-            "glm-4.6v-flash"
-        };
+        let model = req_clone
+            .model
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(crate::glm::DEEPSEEK_DEFAULT_MODEL);
 
         let messages = vec![
             json!({

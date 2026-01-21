@@ -1,4 +1,5 @@
 use crate::api_types::{ExpandCharacterRequest, ExpandWorldviewRequest, GenerateRequest};
+use crate::types::{BluePrintAct, LDAGNode};
 
 pub(crate) fn clean_json(s: &str) -> String {
     let s = s.trim();
@@ -47,182 +48,17 @@ pub(crate) fn clean_json(s: &str) -> String {
     output
 }
 
+// Old prompt function, kept for reference or legacy
 pub(crate) fn construct_prompt(req: &GenerateRequest) -> String {
-    let topic = req
-        .theme
-        .as_deref()
-        .or(req.free_input.as_deref())
-        .unwrap_or("Unknown Theme");
-
-    let synopsis = req.synopsis.as_deref().unwrap_or("");
-    let full_topic = if !synopsis.is_empty() {
-        format!("Theme/Genre: {}\nSynopsis: {}", topic, synopsis)
-    } else {
-        format!("Theme/Genre: {}", topic)
-    };
-
-    let language_tag = req.language.as_deref().unwrap_or("zh-CN");
-    let language_label = if language_tag.to_lowercase().starts_with("zh") {
-        "简体中文".to_string()
-    } else if language_tag.to_lowercase().starts_with("en") {
-        "English".to_string()
-    } else {
-        language_tag.to_string()
-    };
-
-    let types_def = r#"interface MovieTemplate {
-  title: string
-  backgroundImageBase64?: string
-  nodes: Record<string, StoryNode>
-  endings: Record<string, Ending>
-}
-interface StoryNode {
-  content: string
-  level?: number
-  characters?: string[]
-  choices: Choice[]
-}
-interface AffinityEffect {
-  characterId: string
-  delta: number // -20~20，整数
-}
-interface Choice {
-  text: string
-  nextNodeId: string // 指向 nodes 的 key 或 endings 的 key
-  affinityEffect?: AffinityEffect // 可选：不需要时不要输出该字段（不要输出 null）
-}
-interface Ending {
-  type: 'good' | 'neutral' | 'bad'
-  description: string
-}
-"#;
-
-    let characters_json = req
-        .characters
-        .as_ref()
-        .and_then(|cs| serde_json::to_string_pretty(cs).ok())
-        .unwrap_or_else(|| "[]".to_string());
-
-    let protagonist_name = req
-        .characters
-        .as_ref()
-        .and_then(|cs| cs.iter().find(|c| c.is_main).or_else(|| cs.first()))
-        .map(|c| c.name.clone())
-        .unwrap_or_else(|| "主角".to_string());
-
-    format!(
-        r#"# 角色定义
-你是一位享誉全球的互动电影游戏编剧和总导演。你擅长创作引人入胜、逻辑严密且充满情感冲击力的多分支剧情。
-你的任务是根据用户提供的主题，创作一个完整的互动电影剧本，并将其直接输出为符合 TypeScript 接口定义的 JSON 格式。
-
-# 用户输入主题
-"{}"
-
-# 一、核心叙事与风格要求
-- 第一人称沉浸式叙事：所有的 `node.content` 必须使用 **第一人称 ("我")** 进行叙述。玩家就是主角，代入感必须极强。
-- 剧情深度与质量：
-    - 拒绝流水账、拒绝平铺直叙、拒绝假大空。
-    - 必须具备电影剧本般的 **真实感、细腻度与情感张力**。
-    - 严禁任何无意义的故事情节或重复啰嗦的废话。
-- 语言指定：所有剧情内容必须使用 **{}** 撰写。
-
-# 二、基础结构与格式约束
-- JSON 结构规范：
-    - 严格遵循下方的 `TypeScript` 类型定义。
-    - 禁止返回 `meta` / `projectId` / `nodes[].id` / `version` / `owner` / `provenance` 等字段。
-    - 结局分离：所有的结局节点必须定义在顶层的 `endings` 字段中。
-    - ID 格式：
-        - `nodes` 的 Key 必须是 **纯数字字符串** (例如 "1", "2", "3"...)。
-        - **绝对禁止** 使用 `n_` 前缀 (如 `n_1`, `n_start` 等都是错误的)。
-        - 唯一例外：起始节点的 Key 必须固定为 **"start"**。
-    - 结局引用：`StoryNode` 中的 `choices` 若指向结局，必须引用 `endings` 中的 key。
-
-# 三、数值硬性约束 (校验失败将视为错误)
-- 节点总数：`nodes` 的数量必须在 **35 到 45** 之间 (含 35/45)。
-- 结局数量：`endings` 的数量必须在 **4 到 6** 之间。
-- 单节点字数：每个节点的 `content` (AI 智能扩写) 字数必须严格控制在 **45 到 85 字** 之间。
-- 路径深度：必须保证所有的故事线都经过 **至少 12 个节点**。
-
-# 四、Nodes 结构与逻辑约束 (重点)
-
-## 1. 图结构与流程
-- DAG 无环结构：剧情必须构成 **有向无环图 (DAG)**。严禁任何形式的死循环。
-- ID 递增原则：所有节点 key (除了 "start") 必须是严格递增的数字。
-    - `choices.nextNodeId` 只能指向 **数字更大** 的节点或 `endings`。
-    - "start" 节点被视为 0，可以指向任何数字节点。
-    - **严禁回退，严禁指向自身**。
-
-## 2. Level (层级) 控制
-每层的节点指的是 level 值相同的节点
-
-- 起始层级：`start` 节点的 `level` 必须为 **1**。
-- 层级递进：后续节点的 `level` 必须是当前节点的 level +1 的节点
-- 层级宽度：每个 level 下最多只能存在 **5 个节点**。
-- 层级分布：
-    - 每个 level 至少 2 个节点。
-    - 允许收束：必须允许 **至少 15%** 的 level 只有 1 个节点 (剧情收束点)。
-- 结局一致性：所有结局 (`endings`) 视为处于同一个最终 Level。
-
-## 3. 节点复用与收束 (关键)
-- 多对一结构：并不是每个节点的选项都必须指向全新的节点！
-- 必须复用：多个节点可以指向同一个下一级节点。务必设计 **“多对一”** 的路径以减少节点浪费。
-
-## 4. 选项与分支
-- 去重：任意两个节点 **绝对禁止** 出现完全相同的 `content` 或 选项集合。
-- 引用有效性：所有 `nextNodeId` 必须引用真实存在的 Key (在 `nodes` 或 `endings` 中)。
-- 选项分布：
-    - 1 个选项的节点：**< 20%**
-    - 2 个选项的节点：**< 50%**
-    - 3+ 个选项的节点：**>= 60%**
-
-# 五、角色与互动约束
-- 非空约束：每个节点必须至少包含 **1 个角色** (严禁 0 角色)。
-- 多人互动：绝大多数节点必须包含 **至少 2 个角色**。单人独白节点 < 10%。
-- 角色一致性：
-    - 必须使用列表中的角色姓名，严禁改名、创造新角色。
-    - 主角姓名必须为：**"{}"**。
-    - 角色只允许出现在 `nodes[*].characters`（字符串数组）中。
-    - 顶层 **禁止输出** `characters` 字段（服务端会直接使用用户提供的角色清单）。
-
-# 五点五、好感度影响 (affinityEffect)
-- 目的：用 `affinityEffect` 表达选项对角色好感度的变化，用于后续表情/结局页展示。
-- 覆盖率硬性约束：**至少 30% 的节点**，必须在其 `choices` 中包含 **至少 1 个** 带 `affinityEffect` 的选项。
-- 必须根据节点的实际情况设置节点的好感度数据，例如：做出了符合角色期望的选择加好感，反之减好感。
-- 字段规范：
-    - `affinityEffect` 结构为 `{{ characterId, delta }}`.
-    - `delta` 必须为整数，范围 **-20 ~ 20**。
-    - `characterId` 必须是该节点 `characters` 中出现的角色姓名，且 **绝对禁止** 为主角（主角姓名见上文约束）。
-- 输出规范：如果某个选项没有好感度变化，**不要输出** `affinityEffect` 字段（不要输出 `null`）。
-
-# 六、结局触发机制
-- 灵活结局：`endings` 的 Key 不再固定，可以根据剧情自由命名 (如 `ending_hero`, `ending_regret` 等)。
-- 结局描述：每个结局的 `description` 长度不能超过 **40 个字**。
-- 快速通道：**必须包含一个可以快速到达的结局路径**。
-    - 例如：从 Start -> 节点 3 -> 节点 5 -> (选择某选项) -> 直接到达结局。
-    - 也就是说，在较早的层级 (如 Level 3-5) 就允许通过特定选项直接进入结局。
-- 互斥规则：
-    - `nodes` 中的节点 **不允许** 包含 `endingKey` 属性。
-    - 结局只能通过 `choices.nextNodeId` 指向 `endings` 的 Key 来触发。
-
-# 用户提供的角色清单 (JSON)
-{}
-# TypeScript 类型定义 (Schema)
-```typescript
-{}
-```
-# 输出规则
-- 输出必须是 **纯 JSON** 文本。
-- **不要** 包含 markdown 代码块标记。
-- `nodes` 数量：**35~45**。
-- `endings` 数量：**4~6**。
-- 必须包含 `start` 节点。
-开始创作！
-"#,
-        full_topic, language_label, protagonist_name, characters_json, types_def
-    )
+    // Use default values for level_count and act_count for legacy prompt generation
+    construct_blueprint_prompt(req, 40, 3)
 }
 
+
+
+// ... existing expand prompts ...
 pub(crate) fn construct_expand_worldview_prompt(req: &ExpandWorldviewRequest) -> String {
+    // ... (Keep existing implementation)
     let language = req.language.as_deref().unwrap_or("zh-CN");
     if let Some(synopsis) = req.synopsis.as_ref().filter(|s| !s.trim().is_empty()) {
         format!(
@@ -265,6 +101,7 @@ pub(crate) fn construct_expand_worldview_prompt(req: &ExpandWorldviewRequest) ->
 }
 
 pub(crate) fn construct_expand_character_prompt(req: &ExpandCharacterRequest) -> String {
+    // ... (Keep existing implementation)
     let language = req.language.as_deref().unwrap_or("zh-CN");
     // Use worldview as the synopsis source since frontend sends it in 'worldview' field
     let synopsis_content = if !req.worldview.is_empty() {
@@ -351,4 +188,282 @@ pub(crate) fn construct_expand_character_prompt(req: &ExpandCharacterRequest) ->
             req.theme, language
         )
     }
+}
+
+
+// --- New Prompts ---
+
+const BLUEPRINT_TYPES_DEF: &str = r#"
+/** 剧本 */
+export interface BluePrint {
+  /** 层数, 值为 35-45 */
+  levelCount: number
+  /** 幕数, 值为 3-4 */
+  actCount: number
+  /** 起始节点 */
+  startNode: StartNode
+  /**
+   * 关键标记, 数量控制在 1-4 个
+   * - key 为标记的名称, 例如 越狱成功, 获得道具等, 必须是确切具体的内容, 不超过 10 个字;
+   * - value 为标记的数据
+   * @description 这是会影响剧情走向或结局的重要剧情状态, 也是可能造成重要转折, 必须精心设计
+   */
+  flags: {
+    [flagName: string]: {
+      /** 标记的详细描述, 必须是确切具体的内容, 不超过 25 字 */
+      content: string
+      /** 触发/获得 该标记的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成 */
+      triggerLevel: number
+      /** 此 flag 产生副作用的 level 索引, 值为 {@link triggerLevel}-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成 */
+      effectLevel: number
+    }
+  }
+  /** 结局节点, 数量控制在 3-5 个, key 为结局的名称, 例如 成功, 失败等; value 为结局信息 */
+  endings: {
+    [endingName: string]: {
+      /** 结局的详细描述, 不超过 35 字 */
+      content: string
+      /** 触发 该结局的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成 */
+      triggerLevel: number
+    }
+  }
+  /**
+   * 幕(阶段), 表示相对独立的剧情阶段, 例如 1-5 层为第一阶段, 6-13 层为第二阶段等
+   * @description 阶段数量为 {@link actCount} 个
+   */
+  acts: Array<BluePrintAct>
+}
+
+/**
+ * 节点 ID, 格式为 `$level-$index`, 例如 `L1N1` 表示第一层中的第一个节点
+ * @description level 表示第几层, index 表示该层中的第几个节点(从 1 开始索引)
+ * @example L1N1
+ */
+type NodeId = `L${number}N${number}`
+
+/** 起始节点 */
+interface StartNode {
+  /** 节点 ID, 值为 L1N1 */
+  id: 'L1N1'
+  /** 节点内容, 必须以第一个主角的第一人称视角编写, 不超过 60 字 */
+  content: string
+  /** 该节点的角色 name, 数量控制在 1-3 个 */
+  characters: Array<string>
+  /** 选项列表, 数量为 2 */
+  choices: [StartNodeChoice, StartNodeChoice]
+}
+
+/** 起始节点的选项 */
+interface StartNodeChoice {
+  /** 该选项的内容, 必须以第一个主角的第一人称视角编写, 不超过 35 字 */
+  content: string
+  /** 该选项指向的下一个节点 ID */
+  nextNodeId: NodeId
+}
+
+/** 剧本中的幕(阶段) */
+interface BluePrintAct {
+  /**
+   * 该阶段的 level 范围(总层数为 {@link levelCount})
+   * 例如 [1, 5] 表示此幕为 第 1 到第 5 层, 也就是说包含 1-5 层的所有节点; [6, 12] 表示此幕为 第 6 到第 12 层
+   */
+  levelRange: [number, number]
+  /** 该阶段的名称, 不能超过 10 个字 */
+  name: string
+  /**
+   * 该阶段剧情的完整具体的描述, ⚠️ **必须是确切具体的内容, 禁止任何 可能/模糊/模糊描述/猜测/假设/推测 等内容**, 200-240 字
+   * @description 必须 **概括可能出现的所有剧情分支**, 确保不遗漏任何重要信息
+   */
+  description: string
+}
+"#;
+
+pub(crate) fn construct_blueprint_prompt(
+    req: &GenerateRequest,
+    level_count: u32,
+    act_count: u32,
+) -> String {
+    let title = req.theme.as_deref().unwrap_or("Unknown Title");
+    let summary = req.synopsis.as_deref().unwrap_or("");
+    let characters = req
+        .characters
+        .as_ref()
+        .map(|cs| serde_json::to_string_pretty(cs).unwrap_or_default())
+        .unwrap_or_default();
+
+    format!(
+        r#"# 角色定义
+你是一位互动电影游戏编剧和总导演, 你擅长创作 引人入胜 / 逻辑严密 / 充满情感冲击力 的多分支剧情
+
+## 主题
+{title}
+
+## 剧情简稿
+{summary}
+
+## 角色
+{characters}
+
+## 约束条件
+- 剧本的总层数: {level_count}
+- 剧本的总幕数: {act_count}
+
+# 输出
+以下是类型定义, 你需要返回的是一个JSON 数据, 具体要求:
+- JSON 数据的类型为 `BluePrint`
+- **不允许出现任何 `BluePrint` 的类型定义中没有的字段, 绝对不允许出现 nodes**
+- **必须认真阅读注释内容, 并严格遵守注释中的要求, 特别是字数或者数量限制**
+- 禁止包含 `\n`
+- 至少有一个结局节点可以从非最后一个 act 到达
+
+```typescript
+{types}
+```
+
+---
+
+根据用户提供的 主题 / 剧情简稿 / 角色, 发挥你的才华 **反复打磨剧情** 并创作一个完整的互动电影剧本, 并根据 [输出](#输出) 中的要求返回 `BluePrint` 类型的 JSON 数据, **禁止在任何内容的首尾出现中文的双引号**"#,
+        title = title,
+        summary = summary,
+        characters = characters,
+        level_count = level_count,
+        act_count = act_count,
+        types = BLUEPRINT_TYPES_DEF
+    )
+}
+
+const LDAG_TYPES_DEF: &str = r#"
+/** 至少包含一个元素的数组（非空数组） */
+type NonEmptyArray<T> = readonly [T, ...T[]]
+
+/**
+ * 第一行只能有一个元素，后续每一行至少一个元素的二维数组
+ */
+type RestrictedTwoDimensionalArray<T> = readonly [
+  readonly [T],
+  ...NonEmptyArray<T>[]
+]
+
+/**
+ * 每一幕的剧情节点图
+ */
+export type LDAGNodes = RestrictedTwoDimensionalArray<LDAGNode>
+
+/**
+ * 节点 ID, 格式为 `$level-$index`, 例如 `L1N1` 表示第一层中的第一个节点
+ * @description level 表示第几层, index 表示该层中的第几个节点(从 1 开始索引)
+ * @example L1N1
+ */
+type NodeId = `L${number}N${number}`
+
+/** 结局节点 ID */
+type EndingNodeId = `ENDING_${string}`
+
+/**
+ * LDAG 分层有向无环图节点
+ */
+interface LDAGNode {
+  /**
+   * 节点 ID, 格式为 `$level-$index`, 例如 `L1N1` 表示第一层中的第一个节点
+   * @example L1N1 起始节点
+   * @example L2N2 位于第二层的第二个节点(索引为 2 的节点)
+   */
+  id: NodeId
+  /** 节点内容, 不超过 50 字 */
+  content: string
+  /** 该节点包含或关联的角色 name, 数量控制在 1-3 个 */
+  characters: Array<string>
+  /**
+   * 选项列表, 数量为 1-3
+   * ## 允许节点收束
+   * 允许选项指向相同的节点
+   */
+  choices: [LDAGNodeChoice] | [LDAGNodeChoice, LDAGNodeChoice] | [LDAGNodeChoice, LDAGNodeChoice, LDAGNodeChoice]
+}
+
+/** 节点的选项 */
+interface LDAGNodeChoice {
+  /** 该选项的内容, 不超过 25 字 */
+  content: string
+  /** 
+   * 触发(设置)的 flag 名称 
+   * @description 对应 BluePrint 中的 flags[flagName].triggerLevel
+   */
+  triggerFlag?: string
+  /** 
+   * 该选项指向的下一个节点 ID 
+   * @description 如果是 string, 表示无条件跳转; 如果是对象, 表示根据 checkFlag 的值跳转(对应 BluePrint 中的 flags[flagName].effectLevel)
+   */
+  nextNodeId: NodeId | EndingNodeId | ConditionalNextNodeId
+}
+
+/** 条件跳转节点 ID */
+interface ConditionalNextNodeId {
+  /** 需要检查的 flag 名称 */
+  checkFlag: string
+  /** flag 为 true 时的下一个节点 ID */
+  trueId: NodeId | EndingNodeId
+  /** flag 为 false 时的下一个节点 ID */
+  falseId: NodeId | EndingNodeId
+}
+"#;
+
+pub(crate) fn construct_fill_node_content_prompt(
+    req: &GenerateRequest,
+    act_info: &BluePrintAct,
+    ldag_nodes: &Vec<Vec<LDAGNode>>,
+) -> String {
+    let title = req.theme.as_deref().unwrap_or("Unknown Title");
+    let summary = req.synopsis.as_deref().unwrap_or("");
+    let characters = req
+        .characters
+        .as_ref()
+        .map(|cs| serde_json::to_string_pretty(cs).unwrap_or_default())
+        .unwrap_or_default();
+    
+    let act_info_json = serde_json::to_string_pretty(act_info).unwrap_or_default();
+    let ldag_nodes_json = serde_json::to_string_pretty(ldag_nodes).unwrap_or_default();
+
+    format!(
+        r#"# 角色定义
+你是一位互动电影游戏编剧和总导演, 你擅长创作 引人入胜 / 逻辑严密 / 充满情感冲击力 的多分支剧情
+
+## 主题
+{title}
+
+## 剧情简稿
+{summary}
+
+## 角色
+{characters}
+
+## 当前幕剧情信息
+{act_info}
+
+## 任务
+你需要根据给定的 **剧情节点图结构** 和 **当前幕剧情信息**, 为每个节点填充具体的 **剧情内容** 和 **选项内容**。
+
+## 剧情节点图结构
+{ldag_nodes}
+
+## 输出要求
+请输出符合以下 TypeScript 类型定义的 JSON 数据, 也就是一个 `LDAGNodes` 类型的 JSON 数据:
+
+```typescript
+{types}
+```
+
+## 注意事项
+1. 保持剧情的连贯性和逻辑性, 必须符合 **当前幕剧情信息** 的描述。
+2. 节点的 ID 和连接关系 **必须** 与输入的 **剧情节点图结构** 完全一致，不能增加、删除或修改节点和连线，只能填充内容。
+3. `content` 字段为剧情文本。
+4. `choices` 字段中的 `content` 为选项文本。
+5. 严格遵守 JSON 格式输出。"#,
+        title = title,
+        summary = summary,
+        characters = characters,
+        act_info = act_info_json,
+        ldag_nodes = ldag_nodes_json,
+        types = LDAG_TYPES_DEF
+    )
 }

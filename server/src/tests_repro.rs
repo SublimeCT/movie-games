@@ -75,6 +75,8 @@ mod tests {
                 text: "go".to_string(),
                 next_node_id: "1".to_string(),
                 affinity_effect: None,
+                trigger_flag: None,
+                condition: None,
             };
 
             let json = to_string(&choice).unwrap();
@@ -87,6 +89,8 @@ mod tests {
                     character_id: "Alice".to_string(),
                     delta: 10,
                 }),
+                trigger_flag: None,
+                condition: None,
             };
 
             let json2 = to_string(&choice2).unwrap();
@@ -127,6 +131,7 @@ mod tests {
                     created_by: "u".to_string(),
                     created_at: "t".to_string(),
                 },
+                flags: HashMap::new(),
             };
 
             let picked = crate::images::pick_background_prompt(&req, &template);
@@ -235,7 +240,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "go".to_string(),
                         next_node_id: "node_1".to_string(),
-                        affinity_effect: None,
+                        affinity_effect: None, trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -284,6 +289,7 @@ mod tests {
                     created_by: "c".to_string(),
                     created_at: "a".to_string(),
                 },
+                flags: HashMap::new(),
             };
 
             crate::template::normalize_template_nodes(&mut template);
@@ -324,6 +330,7 @@ mod tests {
                     created_by: "c".to_string(),
                     created_at: "a".to_string(),
                 },
+                flags: HashMap::new(),
             };
 
             crate::template::ensure_minimum_game_graph(&mut template, "zh-CN", None);
@@ -358,6 +365,7 @@ mod tests {
                     created_by: "c".to_string(),
                     created_at: "a".to_string(),
                 },
+                flags: HashMap::new(),
             };
 
             let req_chars = vec![crate::api_types::CharacterInput {
@@ -416,7 +424,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "go".to_string(),
                         next_node_id: "bad_end".to_string(),
-                        affinity_effect: None,
+                        affinity_effect: None, trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -450,6 +458,7 @@ mod tests {
                     created_by: "c".to_string(),
                     created_at: "a".to_string(),
                 },
+                flags: HashMap::new(),
             };
 
             crate::template::normalize_template_endings(&mut template);
@@ -510,6 +519,7 @@ mod tests {
                     created_by: "c".to_string(),
                     created_at: "a".to_string(),
                 },
+                flags: HashMap::new(),
             };
 
             let req = GenerateRequest {
@@ -567,6 +577,7 @@ mod tests {
                     created_by: "c".to_string(),
                     created_at: "a".to_string(),
                 },
+                flags: HashMap::new(),
             };
 
             template.characters.insert(
@@ -640,7 +651,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "to 02".to_string(),
                         next_node_id: "n_02".to_string(),
-                        affinity_effect: None,
+                        affinity_effect: None, trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -657,12 +668,12 @@ mod tests {
                         Choice {
                             text: "back".to_string(),
                             next_node_id: "n_start".to_string(),
-                            affinity_effect: None,
+                            affinity_effect: None, trigger_flag: None, condition: None,
                         },
                         Choice {
                             text: "self".to_string(),
                             next_node_id: "n_02".to_string(),
-                            affinity_effect: None,
+                            affinity_effect: None, trigger_flag: None, condition: None,
                         },
                     ],
                 },
@@ -697,6 +708,7 @@ mod tests {
                     created_by: "c".to_string(),
                     created_at: "a".to_string(),
                 },
+                flags: HashMap::new(),
             };
 
             crate::template::sanitize_template_graph(&mut template);
@@ -726,7 +738,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "go".to_string(),
                         next_node_id: "n_missing".to_string(),
-                        affinity_effect: None,
+                        affinity_effect: None, trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -760,6 +772,7 @@ mod tests {
                     created_by: "c".to_string(),
                     created_at: "a".to_string(),
                 },
+                flags: HashMap::new(),
             };
 
             crate::template::sanitize_template_graph(&mut template);
@@ -784,7 +797,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "go".to_string(),
                         next_node_id: "n_03".to_string(),
-                        affinity_effect: None,
+                        affinity_effect: None, trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -800,7 +813,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "end".to_string(),
                         next_node_id: "ending_good".to_string(),
-                        affinity_effect: None,
+                        affinity_effect: None, trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -816,7 +829,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "end".to_string(),
                         next_node_id: "ending_good".to_string(),
-                        affinity_effect: None,
+                        affinity_effect: None, trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -857,6 +870,7 @@ mod tests {
                     created_by: "c".to_string(),
                     created_at: "a".to_string(),
                 },
+                flags: HashMap::new(),
             };
 
             crate::template::sanitize_template_graph(&mut template);
@@ -908,6 +922,7 @@ mod tests {
                     created_by: "c".to_string(),
                     created_at: "a".to_string(),
                 },
+                flags: HashMap::new(),
             };
 
             crate::images::attach_avatar_to_template(
@@ -958,6 +973,7 @@ mod tests {
                     created_by: "c".to_string(),
                     created_at: "a".to_string(),
                 },
+                flags: HashMap::new(),
             };
 
             crate::images::attach_avatar_to_template(

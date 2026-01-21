@@ -7,6 +7,7 @@ mod db;
 mod glm;
 mod handlers;
 mod images;
+mod ldag;
 mod prompt;
 mod sensitive;
 mod template;
@@ -16,6 +17,8 @@ mod tests_repro;
 mod tests_repro_sensitive_v2;
 #[cfg(test)]
 mod tests_sensitive;
+#[cfg(test)]
+mod tests_ldag;
 mod types;
 
 #[tokio::main]

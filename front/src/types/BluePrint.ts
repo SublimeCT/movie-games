@@ -1,8 +1,8 @@
 /** 剧本 */
 export interface BluePrint {
-  /** 层数, 值为 25-30 */
+  /** 层数, 值为 35-45 */
   levelCount: number
-  /** 幕数, 值为 2-3 */
+  /** 幕数, 值为 3-4 */
   actCount: number
   /** 起始节点 */
   startNode: StartNode
@@ -19,7 +19,7 @@ export interface BluePrint {
       /** 触发/获得 该标记的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成 */
       triggerLevel: number
       /** 此 flag 产生副作用的 level 索引, 值为 {@link triggerLevel}-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成 */
-      effectAct: number
+      effectLevel: number
     }
   }
   /** 结局节点, 数量控制在 3-5 个, key 为结局的名称, 例如 成功, 失败等; value 为结局信息 */
@@ -40,9 +40,10 @@ export interface BluePrint {
 
 /**
  * 节点 ID, 格式为 `$level-$index`, 例如 `L1N1` 表示第一层中的第一个节点
+ * @description level 表示第几层, index 表示该层中的第几个节点(从 1 开始索引)
  * @example L1N1
  */
-type NodeId = string
+type NodeId = `L${number}N${number}`
 
 /** 起始节点 */
 interface StartNode {
@@ -78,34 +79,4 @@ interface BluePrintAct {
    * @description 必须 **概括可能出现的所有剧情分支**, 确保不遗漏任何重要信息
    */
   description: string
-}
-
-// =========================  LDAG  =============================
-
-/**
- * 包含全部剧情节点的 分层有向无环图 (`Layered Directed Acyclic Graph`)
- * @description 第一个元素是起始节点
- */
-type LDAGNodes = LDAGNode[]
-
-interface LDAGNode {
-  /**
-   * 节点 ID, 格式为 `$level-$index`, 例如 `L1N1` 表示第一层中的第一个节点
-   * @example L1N1 起始节点
-   */
-  id: 'L1N1'
-  /** 节点内容, 不超过 60 字 */
-  content: string
-  /** 该节点的角色 name, 数量控制在 1-3 个 */
-  characters: Array<string>
-  /** 选项列表, 数量为 2 */
-  choices: [NodeChoice, NodeChoice]
-}
-
-/** 节点的选项 */
-interface NodeChoice {
-  /** 该选项的内容, 不超过 35 字 */
-  content: string
-  /** 该选项指向的下一个节点 ID */
-  nextNodeId: NodeId
 }

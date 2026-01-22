@@ -29,7 +29,7 @@ export type EndingNodes = {
 }
 
 /** 结局节点 */
-interface EndingNode {
+export interface EndingNode {
   /** 结局的详细描述, 不超过 35 字 */
   content: string
   /** 触发 该结局的 level 索引 */
@@ -41,15 +41,15 @@ interface EndingNode {
  * @description level 表示第几层, index 表示该层中的第几个节点(从 1 开始索引)
  * @example L1N1
  */
-type NodeId = `L${number}N${number}`
+export type NodeId = `L${number}N${number}`
 
 /** 结局节点 ID */
-type EndingNodeId = `ENDING_${string}`
+export type EndingNodeId = `ENDING_${string}`
 
 /**
  * LDAG 分层有向无环图节点
  */
-interface LDAGNode {
+export interface LDAGNode {
   /**
    * 节点 ID, 格式为 `$level-$index`, 例如 `L1N1` 表示第一层中的第一个节点
    * @example L1N1 起始节点
@@ -69,7 +69,7 @@ interface LDAGNode {
 }
 
 /** 节点的选项 */
-interface LDAGNodeChoice {
+export interface LDAGNodeChoice {
   /** 该选项的内容, 不超过 25 字 */
   content: string
   /** 
@@ -85,7 +85,7 @@ interface LDAGNodeChoice {
 }
 
 /** 条件跳转节点 ID */
-interface ConditionalNextNodeId {
+export interface ConditionalNextNodeId {
   /** 需要检查的 flag 名称 */
   checkFlag: string
   /** flag 为 true 时的下一个节点 ID */

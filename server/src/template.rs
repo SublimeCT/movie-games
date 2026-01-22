@@ -398,67 +398,8 @@ pub(crate) fn sanitize_template_graph(template: &mut MovieTemplate) {
     }
 }
 
-pub(crate) fn sanitize_affinity_effects(template: &mut MovieTemplate) {
-    if template.nodes.is_empty() {
-        return;
-    }
-
-    let mut id_to_name: HashMap<String, String> = HashMap::new();
-    for c in template.characters.values() {
-        let id = c.id.trim();
-        let name = c.name.trim();
-        if !id.is_empty() && !name.is_empty() {
-            id_to_name.insert(id.to_string(), name.to_string());
-        }
-    }
-
-    let protagonist = pick_protagonist_name(&template.characters);
-
-    for node in template.nodes.values_mut() {
-        let allowed: HashMap<String, ()> = node
-            .characters
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|raw| {
-                let v = raw.trim().to_string();
-                if v.is_empty() {
-                    return None;
-                }
-                let resolved = id_to_name.get(&v).cloned().unwrap_or(v);
-                Some((resolved, ()))
-            })
-            .collect();
-
-        for c in node.choices.iter_mut() {
-            let Some(effect) = c.affinity_effect.as_mut() else {
-                continue;
-            };
-
-            effect.delta = effect.delta.clamp(-20, 20);
-
-            let raw = effect.character_id.trim().to_string();
-            if raw.is_empty() {
-                c.affinity_effect = None;
-                continue;
-            }
-
-            let resolved = id_to_name.get(&raw).cloned().unwrap_or(raw);
-            effect.character_id = resolved.clone();
-
-            if let Some(p) = protagonist.as_ref() {
-                if p == &resolved {
-                    c.affinity_effect = None;
-                    continue;
-                }
-            }
-
-            if !allowed.contains_key(&resolved) {
-                c.affinity_effect = None;
-            }
-        }
-    }
-}
+// REMOVED: sanitize_affinity_effects
+// because affinity system is removed.
 
 fn pick_protagonist_name(chars: &HashMap<String, types::Character>) -> Option<String> {
     if chars.is_empty() {
@@ -638,14 +579,12 @@ pub(crate) fn ensure_minimum_game_graph(
                     types::Choice {
                         text: "回去，当面把话说清楚".to_string(),
                         next_node_id: "confront".to_string(), // use pure id
-                        affinity_effect: None,
                         trigger_flag: None,
                         condition: None,
                     },
                     types::Choice {
                         text: "装作没看见，先离开".to_string(),
                         next_node_id: "escape".to_string(), // use pure id
-                        affinity_effect: None,
                         trigger_flag: None,
                         condition: None,
                     },
@@ -665,14 +604,12 @@ pub(crate) fn ensure_minimum_game_graph(
                     types::Choice {
                         text: "坚持边界".to_string(),
                         next_node_id: "ending_good".to_string(),
-                        affinity_effect: None,
                         trigger_flag: None,
                         condition: None,
                     },
                     types::Choice {
                         text: "妥协退让".to_string(),
                         next_node_id: "ending_bad".to_string(),
-                        affinity_effect: None,
                         trigger_flag: None,
                         condition: None,
                     },
@@ -692,7 +629,6 @@ pub(crate) fn ensure_minimum_game_graph(
                     types::Choice {
                         text: "回家休息".to_string(),
                         next_node_id: "ending_neutral".to_string(),
-                        affinity_effect: None,
                         trigger_flag: None,
                         condition: None,
                     },
@@ -785,7 +721,6 @@ pub(crate) fn convert_story_to_template(story: Story, project_id: String, owner:
                     choices.push(types::Choice {
                         text: c.content.clone(),
                         next_node_id: final_next_id,
-                        affinity_effect: None,
                         trigger_flag: c.trigger_flag.clone(),
                         condition: final_condition,
                     });

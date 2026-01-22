@@ -175,16 +175,6 @@ pub struct StoryNode {
     pub choices: Vec<Choice>,
 }
 
-/// 好感度影响
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct AffinityEffect {
-    /// 角色 ID
-    pub character_id: String,
-    /// 变化值
-    pub delta: i32,
-}
-
 /// 选项
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -193,9 +183,6 @@ pub struct Choice {
     pub text: String,
     /// 下一个节点 ID
     pub next_node_id: String,
-    /// 好感度影响
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub affinity_effect: Option<AffinityEffect>,
     /// 触发的 Flag (Generating 2.0)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_flag: Option<String>,
@@ -293,8 +280,10 @@ pub struct FlagInfo {
     /// 标记的详细描述, 必须是确切具体的内容, 不超过 25 字
     pub content: String,
     /// 触发/获得 该标记的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成
+    /// @description 指在该 level 中的 **某个节点的某个选项** 会触发该标记, 允许该 level 有多个节点触发, 但 **禁止该 level 的所有节点的所有选项都触发**
     pub trigger_level: u32,
     /// 此 flag 产生副作用的 level 索引, 值为 {@link triggerLevel}-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成
+    /// @description 指在该 level 中的 **某个节点的某个选项** 会根据该标记产生分支/跳转, 允许该 level 有多个节点产生影响, 但 **禁止该 level 的所有节点的所有选项都产生影响**
     pub effect_level: u32,
 }
 
@@ -305,6 +294,7 @@ pub struct EndingInfo {
     /// 结局的详细描述, 不超过 35 字
     pub content: String,
     /// 触发 该结局的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成
+    /// @description 指在该 level 中的 **某个节点的某个选项** 会触发该结局, 允许该 level 有多个节点触发, 但 **禁止该 level 的所有节点的所有选项都触发**
     pub trigger_level: u32,
 }
 
@@ -382,6 +372,15 @@ pub struct ConditionalNextNodeId {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Story {
+    /// 数据库请求 ID
+    pub request_id: Option<String>,
+    /// 标题
+    pub title: String,
+    /// 元数据（简介、时长、题材等）
+    pub meta: MetaInfo,
+    /// 角色集合，Key 为角色 ID
+    #[serde(default)]
+    pub characters: HashMap<String, Character>,
     /// 蓝图
     #[serde(flatten)]
     pub blueprint: BluePrint,

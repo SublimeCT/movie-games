@@ -29,12 +29,6 @@ const {
   handleRemake,
 } = useGameState();
 
-const affinityState = useStorage<Record<string, number>>(
-  'mg_affinity_state',
-  {},
-  localStorage,
-);
-
 const selectDefaultCharacter = (characters: Record<string, Character>) => {
   const entries = Object.entries(characters);
   if (entries.length === 0) return null;
@@ -63,57 +57,6 @@ const protagonistName = computed(() => {
     ? selectDefaultCharacter(template.characters)
     : null;
   return String(selected?.name || '').trim();
-});
-
-const getAffinityBarStyle = (value: number) => {
-  const v = Math.max(0, Math.min(100, Math.round(value)));
-  const hue = 10 + (v / 100) * 120;
-  return {
-    width: `${v}%`,
-    backgroundImage: `linear-gradient(90deg, hsla(${hue}, 95%, 58%, 0.9), hsla(${
-      hue + 18
-    }, 95%, 60%, 0.65))`,
-  } as const;
-};
-
-const affinityRows = computed(() => {
-  const characters = data.value?.characters ?? {};
-  const protagonist = protagonistName.value;
-
-  const rows = Object.values(characters)
-    .map((c) => {
-      const name = String(c.name || '').trim();
-      if (!name) return null;
-      if (protagonist && name === protagonist) return null;
-
-      const raw = affinityState.value[name];
-      const value = Number.isFinite(raw) ? Number(raw) : 50;
-      const v = Math.max(0, Math.min(100, Math.round(value)));
-
-      return {
-        key: String(c.id || name),
-        name,
-        gender: String(c.gender || '其他'),
-        role: String(c.role || ''),
-        age: c.age || 0,
-        avatarPath: c.avatarPath,
-        value: v,
-        barStyle: getAffinityBarStyle(v),
-      };
-    })
-    .filter(Boolean) as {
-    key: string;
-    name: string;
-    gender: string;
-    role: string;
-    age: number;
-    avatarPath?: string;
-    value: number;
-    barStyle: { width: string; backgroundImage: string };
-  }[];
-
-  rows.sort((a, b) => a.name.localeCompare(b.name));
-  return rows;
 });
 
 const isShared = ref(false);
@@ -769,41 +712,7 @@ const copyJson = async () => {
               </div>
 
               <div class="mt-6">
-                <div class="text-xs tracking-[0.24em] uppercase text-white/50 font-semibold">好感度</div>
-
-                <div v-if="affinityRows.length === 0" class="mt-3 text-sm text-white/50">
-                  暂无可展示的角色好感度
-                </div>
-
-                <div v-else class="mt-3 space-y-2">
-                  <div
-                    v-for="row in affinityRows"
-                    :key="row.key"
-                    class="rounded-xl border border-white/10 bg-white/5 px-4 py-3"
-                  >
-                    <div class="flex items-center gap-3 mb-2">
-                      <CharacterAvatar
-                        :name="row.name"
-                        :gender="row.gender === '女' ? 'female' : row.gender === '男' ? 'male' : 'other'"
-                        :avatarPath="row.avatarPath"
-                        className="w-10 h-10 rounded-full shrink-0"
-                      />
-                      <div class="flex-1 min-w-0">
-                        <div class="flex items-center justify-between gap-2">
-                          <div class="text-sm font-semibold text-white/90 truncate">
-                            {{ row.name }}
-                            <span v-if="row.age" class="ml-1 text-[10px] text-white/50 font-normal">{{ row.age }}岁</span>
-                          </div>
-                          <div class="text-xs font-mono text-white/70">{{ row.value }}%</div>
-                        </div>
-                        <div v-if="row.role" class="text-xs text-white/50 truncate">{{ row.role }}</div>
-                      </div>
-                    </div>
-                    <div class="h-1.5 rounded-full bg-white/10 overflow-hidden">
-                      <div class="h-full rounded-full" :style="row.barStyle"></div>
-                    </div>
-                  </div>
-                </div>
+                <!-- Affinity System Removed -->
               </div>
 
               <!-- Endings Map Removed -->

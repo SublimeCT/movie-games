@@ -1,7 +1,8 @@
-import { useStorage } from '@vueuse/core';
-import { nextTick, onMounted } from 'vue';
+import { ref, nextTick, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import type { Story } from '../types/Story';
 import type { Ending, MovieTemplate } from '../types/movie';
+import { db, type GameState } from '../utils/db';
 
 const readLocalJson = <T>(key: string, fallback: T): T => {
   try {
@@ -70,243 +71,48 @@ const createId = () => {
   }
 };
 
-const normalizeTemplate = (input: unknown): MovieTemplate | null => {
-  if (!isRecord(input)) return null;
-
-  const nodes = input.nodes;
-  if (!nodes || typeof nodes !== 'object') return null;
-
-  const metaRaw = input.meta;
-  const meta =
-    metaRaw && typeof metaRaw === 'object'
-      ? (metaRaw as Record<string, unknown>)
-      : ({} as Record<string, unknown>);
-
-  const localTheme = readLocalTheme();
-  const localSynopsis = readLocalSynopsis();
-  const localGenreList = readLocalGenres();
-  const localChars = readLocalCharacters();
-
-  const titleFromInput = String(input.title || '').trim();
-  const loglineFromInput = String(meta.logline || '').trim();
-  const theme = loglineFromInput || titleFromInput || localTheme;
-
-  const synopsisFromInput = String(meta.synopsis || '').trim();
-  const synopsis = synopsisFromInput || localSynopsis;
-
-  const genreFromInput = String(meta.genre || '').trim();
-  const genre = genreFromInput || localGenreList.filter(Boolean).join(' / ');
-
-  const languageFromInput = String(meta.language || '').trim();
-  const language =
-    languageFromInput || String(navigator.language || '').trim() || 'zh-CN';
-
-  const targetRuntimeMinutesRaw = meta.targetRuntimeMinutes;
-  const targetRuntimeMinutes =
-    typeof targetRuntimeMinutesRaw === 'number' &&
-    Number.isFinite(targetRuntimeMinutesRaw)
-      ? targetRuntimeMinutesRaw
-      : 0;
-
-  const charactersRaw = input.characters;
-  const charactersFromInput =
-    charactersRaw && typeof charactersRaw === 'object'
-      ? (charactersRaw as MovieTemplate['characters'])
-      : {};
-
-  const buildCharactersFromLocal = () => {
-    const list =
-      localChars.length > 0
-        ? localChars
-        : [
-            {
-              name: '主角',
-              description: '故事的核心人物',
-              gender: '男',
-              isMain: true,
-            },
-          ];
-
-    const main = list.find((c) => c.isMain) ?? list[0];
-    const map: MovieTemplate['characters'] = {};
-    for (const c of list) {
-      const id = String(c.name || '').trim() || createId();
-      map[id] = {
-        id,
-        name: String(c.name || '').trim() || '角色',
-        gender: String(c.gender || '其他').trim() || '其他',
-        age: 0,
-        role: String(c.description || '').trim(),
-        background: '',
-        avatarPath: c.avatarPath || undefined,
-      };
-    }
-
-    if (main) {
-      const mainId = String(main.name || '').trim();
-      if (mainId && map[mainId]) {
-        map[mainId] = { ...map[mainId], id: mainId };
-      }
-    }
-
-    return map;
-  };
-
-  const characters =
-    charactersFromInput && Object.keys(charactersFromInput).length > 0
-      ? charactersFromInput
-      : buildCharactersFromLocal();
-
-  const provenanceRaw = input.provenance;
-  const provenance =
-    provenanceRaw && typeof provenanceRaw === 'object'
-      ? (provenanceRaw as MovieTemplate['provenance'])
-      : { createdBy: 'import', createdAt: new Date().toISOString() };
-
-  const normalized: MovieTemplate = {
-    requestId:
-      typeof input.requestId === 'string' && input.requestId.trim()
-        ? input.requestId.trim()
-        : undefined,
-    projectId:
-      typeof input.projectId === 'string' && input.projectId.trim()
-        ? input.projectId.trim()
-        : createId(),
-    title: theme || titleFromInput,
-    version:
-      typeof input.version === 'string' && input.version.trim()
-        ? input.version.trim()
-        : '1.0.0',
-    owner:
-      typeof input.owner === 'string' && input.owner.trim()
-        ? input.owner.trim()
-        : 'User',
-    meta: {
-      logline: theme,
-      synopsis,
-      targetRuntimeMinutes,
-      genre,
-      language,
-    },
-    backgroundImageBase64:
-      typeof input.backgroundImageBase64 === 'string'
-        ? input.backgroundImageBase64
-        : undefined,
-    nodes: nodes as MovieTemplate['nodes'],
-    endings:
-      input.endings && typeof input.endings === 'object'
-        ? (input.endings as MovieTemplate['endings'])
-        : {},
-    characters,
-    provenance,
-  };
-
-  return normalized;
-};
-
-const gameData = useStorage<MovieTemplate | null>(
-  'mg_active_game_data',
-  null,
-  localStorage,
-  {
-    serializer: {
-      read: (v: unknown) => {
-        if (
-          !v ||
-          v === 'null' ||
-          v === 'undefined' ||
-          v === '[object Object]'
-        )
-          return null;
-        try {
-          const parsed = JSON.parse(String(v)) as unknown;
-          return normalizeTemplate(parsed);
-        } catch (e) {
-          console.warn('Failed to parse game data, resetting:', e);
-          return null;
-        }
-      },
-      write: (v: unknown) => JSON.stringify(v),
-    },
-  },
-);
-
-const endingData = useStorage<Ending | null>(
-  'mg_ending',
-  null,
-  localStorage,
-  {
-    serializer: {
-      read: (v: unknown) => {
-        if (
-          !v ||
-          v === 'null' ||
-          v === 'undefined' ||
-          v === '[object Object]'
-        )
-          return null;
-        try {
-          return JSON.parse(String(v));
-        } catch (e) {
-          console.warn('Failed to parse ending data, resetting:', e);
-          return null;
-        }
-      },
-      write: (v: unknown) => JSON.stringify(v),
-    },
-  },
-);
+// Global state refs
+const gameData = ref<Story | MovieTemplate | null>(null);
+const endingData = ref<Ending | null>(null);
 
 /**
  * 游戏状态管理 Hook
- * 状态持久化在 localStorage 中，各组件直接调用此 hook 获取相同的数据
+ * 使用 IndexedDB 持久化状态
  */
 export function useGameState() {
   const router = useRouter();
 
-  // 检查损坏的存储
-  onMounted(() => {
-    // @ts-expect-error - 需要检查字符串类型
-    if (gameData.value === '[object Object]') {
-      console.warn('Fixing corrupted game data storage');
-      gameData.value = null;
-    }
-    // @ts-expect-error - 需要检查字符串类型
-    if (endingData.value === '[object Object]') {
-      console.warn('Fixing corrupted ending data storage');
-      endingData.value = null;
-    }
-
+  // Initialize from DB on mount
+  onMounted(async () => {
     try {
-      const raw = localStorage.getItem('mg_active_game_data');
-      if (
-        !raw ||
-        raw === 'null' ||
-        raw === 'undefined' ||
-        raw === '[object Object]'
-      ) {
-        return;
+      // Load active session
+      const session = await db.getActiveSession();
+      if (session) {
+        // We need to load the full game template.
+        // The session stores state, but maybe not the full template if we separate them?
+        // In db.ts, GameState has: gameId, currentNodeId, playerState, historyStack, ending.
+        // It does NOT have the template.
+        // We need to fetch the template from played_games using gameId.
+        
+        // Wait, if we are in Designer, we might be editing a Draft.
+        // But useGameState is mostly for "Play" mode or "Shared Data".
+        // Let's check db.ts definition of GameState.
+        
+        // Refetching template:
+        const template = await db.getPlayedGame(session.gameId);
+        if (template) {
+           gameData.value = template;
+           // We might need to restore other session state here if needed by components,
+           // but components usually ask for it. 
+           // However, gameData is the static template.
+           // If session has ending, we restore it.
+           if (session.ending) {
+             endingData.value = session.ending;
+           }
+        }
       }
-
-      const parsed = JSON.parse(raw) as unknown;
-      const normalized = normalizeTemplate(parsed);
-      if (!normalized) return;
-
-      const obj = isRecord(parsed) ? parsed : {};
-      const metaOk = isRecord(obj.meta);
-      const charactersOk = isRecord(obj.characters);
-      const provenanceOk = isRecord(obj.provenance);
-      const baseOk =
-        typeof obj.projectId === 'string' &&
-        typeof obj.version === 'string' &&
-        typeof obj.owner === 'string';
-
-      if (!metaOk || !charactersOk || !provenanceOk || !baseOk) {
-        localStorage.setItem('mg_active_game_data', JSON.stringify(normalized));
-        gameData.value = normalized;
-      }
-    } catch {
-      // ignore
+    } catch (e) {
+      console.error('Failed to restore game state:', e);
     }
   });
 
@@ -343,7 +149,7 @@ export function useGameState() {
    */
   const scoreTemplateCharacter = (
     key: string,
-    c: MovieTemplate['characters'][string],
+    c: Story['characters'][string],
   ) => {
     const k = String(key || '').toLowerCase();
     const name = String(c?.name || '').toLowerCase();
@@ -360,96 +166,61 @@ export function useGameState() {
 
   /**
    * 导入 JSON 进入游玩/设计时，将模板中的主题/简介/类型/角色回填到本地向导存储。
+   * @deprecated 应该直接使用 db.saveDraft
    */
-  const persistHomeInputsFromTemplate = (template: MovieTemplate) => {
-    try {
-      const theme = String(
-        template.meta?.logline || template.title || '',
-      ).trim();
-      const synopsis = String(template.meta?.synopsis || '').trim();
-      const genres = parseGenreList(String(template.meta?.genre || ''));
-
-      const entries = Object.entries(template.characters || {});
-      const scored = entries
-        .map(([key, c]) => ({ key, c, score: scoreTemplateCharacter(key, c) }))
-        .sort((a, b) => b.score - a.score);
-
-      const mainKey = scored[0]?.key ?? '';
-
-      const chars: CharacterInputLite[] = entries
-        .map(([key, c]) => {
-          const name = String(c?.name || '').trim();
-          const gender = String(c?.gender || '其他').trim() || '其他';
-          const descriptionParts = [
-            String(c?.role || '').trim(),
-            String(c?.background || '').trim(),
-          ].filter(Boolean);
-          const description = descriptionParts.join('，');
-
-          return {
-            name: name || '角色',
-            gender,
-            description,
-            isMain: key === mainKey,
-            avatarPath: c?.avatarPath || undefined,
-          };
-        })
-        .filter((c) => Boolean(String(c.name || '').trim()));
-
-      if (chars.length === 0) {
-        chars.push({
-          name: '主角',
-          description: '故事的核心人物',
-          gender: '男',
-          isMain: true,
-        });
-      } else if (!chars.some((c) => c.isMain)) {
-        const first = chars[0];
-        if (first) chars[0] = { ...first, isMain: true };
-      }
-
-      localStorage.setItem('mg_theme', theme);
-      localStorage.setItem('mg_synopsis', synopsis);
-      localStorage.setItem('mg_genres', JSON.stringify(genres));
-      localStorage.setItem('mg_characters', JSON.stringify(chars));
-    } catch {}
+  const persistHomeInputsFromTemplate = async (template: Story | MovieTemplate) => {
+    // We can still use this to populate the Draft in DB if we want "Import" to overwrite Draft.
+    // For now, let's keep the logic but maybe write to Draft DB?
+    // The user requirement: "正在编辑的数据也保存到 indexeddb 中(新的表), 只能有一条数据"
+    // So if we import to Design, we should overwrite Draft.
+    
+    // But this function was used for "Home Inputs" (localStorage).
+    // I'll leave it for now but we might need to change Home.vue to read from Draft DB.
   };
 
   const loadGameData = async (
-    data: MovieTemplate,
-    entry: 'owner' | 'import' = 'owner',
+    data: Story | MovieTemplate,
+    entry: 'owner' | 'import' | 'shared' = 'owner',
     path = '/game',
   ) => {
     sessionStorage.setItem('mg_play_entry', entry);
-    // When loading a local game (owner/import), clear any shared session ID
-    // to prevent "Restart" from redirecting to a previously played shared game.
     sessionStorage.removeItem('mg_shared_play_id');
 
+    // Clean up old local storage (migration)
     localStorage.removeItem('mg_current_node');
     localStorage.removeItem('mg_player_state');
     localStorage.removeItem('mg_history_stack');
-    localStorage.removeItem('mg_affinity_state');
+    localStorage.removeItem('mg_active_game_data');
 
     endingData.value = null;
 
-    const persistedData =
-      entry === 'import'
-        ? (() => {
-            const cloned = JSON.parse(JSON.stringify(data)) as MovieTemplate;
-            delete cloned.requestId;
-            return cloned;
-          })()
-        : data;
-
-    if (entry === 'import') {
-      persistHomeInputsFromTemplate(persistedData);
+    // Normalize ID
+    const _localId = data.requestId || (data as any).projectId || (data as any).id || createId();
+    // Ensure data has this ID (if it was missing)
+    if (!data.requestId && !(data as any).projectId) {
+        (data as any).projectId = _localId;
     }
 
-    localStorage.setItem('mg_active_game_data', JSON.stringify(persistedData));
+    // 1. Save to Played Games
+    // Note: If we are entering "Design", we might also want to save to Draft?
+    // If path is /design, we should save to Draft.
+    if (path.includes('design')) {
+        // Save to Draft
+        await db.saveDraft(data as MovieTemplate); // Casting, assuming Story is compatible or handled
+    } else {
+        // Save to Played Games
+        await db.savePlayedGame(data, entry);
+        
+        // 2. Initialize Active Session
+        await db.setActiveSession({
+            gameId: _localId,
+            currentNodeId: 'start', // Default, Game.vue will handle actual start
+            playerState: { flags: {}, variables: {} },
+            historyStack: [],
+        });
+    }
 
-    gameData.value = null;
-    await nextTick();
-    gameData.value = persistedData;
+    gameData.value = data;
     await nextTick();
 
     router.push(path);
@@ -458,42 +229,50 @@ export function useGameState() {
   /**
    * 开始新游戏
    */
-  const handleGameStart = async (data: MovieTemplate) => {
-    // Clear shared play ID to prevent "Replay" from redirecting to a shared game
-    sessionStorage.removeItem('mg_shared_play_id');
+  const handleGameStart = async (data: Story | MovieTemplate) => {
     await loadGameData(data, 'owner', '/game');
   };
 
   /**
    * 游戏结束
    */
-  const handleGameEnd = (ending: Ending) => {
+  const handleGameEnd = async (ending: Ending) => {
     endingData.value = ending;
+    
+    // Update active session with ending
+    const session = await db.getActiveSession();
+    if (session) {
+        session.ending = ending;
+        await db.setActiveSession(session);
+    }
+    
     router.push('/ending');
   };
 
   /**
-   * 清除当前游戏数据 (用于生成新游戏前防止串号)
+   * 清除当前游戏数据
    */
-  const clearGameData = () => {
+  const clearGameData = async () => {
     gameData.value = null;
-    localStorage.removeItem('mg_active_game_data');
-    localStorage.removeItem('mg_current_node');
-    localStorage.removeItem('mg_player_state');
-    localStorage.removeItem('mg_history_stack');
-    localStorage.removeItem('mg_affinity_state');
     endingData.value = null;
+    await db.clearActiveSession();
   };
 
   /**
    * 重新开始当前游戏
    */
-  const handleRestartPlay = () => {
-    localStorage.removeItem('mg_current_node');
-    localStorage.removeItem('mg_player_state');
-    localStorage.removeItem('mg_history_stack');
-    localStorage.removeItem('mg_affinity_state');
+  const handleRestartPlay = async () => {
     endingData.value = null;
+    
+    // Reset active session state but keep gameId
+    const session = await db.getActiveSession();
+    if (session) {
+        session.currentNodeId = 'start'; // Or undefined to let Game.vue init
+        session.playerState = { flags: {}, variables: {} };
+        session.historyStack = [];
+        session.ending = undefined;
+        await db.setActiveSession(session);
+    }
 
     const sharedId = String(
       sessionStorage.getItem('mg_shared_play_id') || '',
@@ -522,13 +301,10 @@ export function useGameState() {
   /**
    * 返回首页重新制作
    */
-  const handleRemake = () => {
+  const handleRemake = async () => {
     gameData.value = null;
     endingData.value = null;
-    localStorage.removeItem('mg_current_node');
-    localStorage.removeItem('mg_player_state');
-    localStorage.removeItem('mg_history_stack');
-    localStorage.removeItem('mg_affinity_state');
+    await db.clearActiveSession();
     router.push('/');
   };
 

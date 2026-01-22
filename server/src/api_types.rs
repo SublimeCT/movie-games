@@ -1,10 +1,17 @@
-use crate::types::MovieTemplate;
+use crate::types::{MovieTemplate, Story};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GenerateResponse {
+    pub(crate) id: Uuid,
+    pub(crate) story: Story,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportResponse {
     pub(crate) id: Uuid,
     pub(crate) template: MovieTemplate,
 }

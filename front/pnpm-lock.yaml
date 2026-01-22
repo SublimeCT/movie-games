@@ -32,6 +32,9 @@ importers:
       '@vueuse/motion':
         specifier: ^3.0.3
         version: 3.0.3(vue@3.5.26(typescript@5.9.3))
+      idb:
+        specifier: ^8.0.3
+        version: 8.0.3
       lucide-vue-next:
         specifier: ^0.562.0
         version: 0.562.0(vue@3.5.26(typescript@5.9.3))
@@ -849,6 +852,9 @@ packages:
 
   hey-listen@1.0.8:
     resolution: {integrity: sha512-COpmrF2NOg4TBWUJ5UVyaCU2A88wEMkUPK4hNqyCkqHbxT92BbvfjoSozkAIIm6XhicGlJHhFdullInrdhwU8Q==}
+
+  idb@8.0.3:
+    resolution: {integrity: sha512-LtwtVyVYO5BqRvcsKuB2iUMnHwPVByPCXFXOpuU96IZPPoPN6xjOGxZQ74pgSVVLQWtUOYgyeL4GE98BY5D3wg==}
 
   ignore@7.0.5:
     resolution: {integrity: sha512-Hs59xBNfUIunMFgWAbGX5cq6893IbWg4KnrjbYwX3tx0ztorVgTDA6B2sxf8ejHJ4wz8BqGUMYlnzNBer5NvGg==}
@@ -2249,6 +2255,8 @@ snapshots:
       function-bind: 1.1.2
 
   hey-listen@1.0.8: {}
+
+  idb@8.0.3: {}
 
   ignore@7.0.5:
     optional: true

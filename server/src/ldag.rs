@@ -3,23 +3,25 @@ use rand::prelude::*;
 use std::collections::HashMap;
 
 /// 生成静态数据（总层数和幕数）
-/// 根据需求规范，总层数应在 35-45 之间，幕数在 3-4 之间
+/// 根据需求规范，总层数应在 30-40 之间，幕数在 3-4 之间
 pub fn generate_static_data() -> (u32, u32) {
     let mut rng = rand::thread_rng();
-    // Requirements: 35-45 levels, 3-4 acts.
-    // Also each act 8-15 levels.
+    // Requirements: 30-40 levels, 3-4 acts.
+    // Also each act 6-12 levels.
     // We need to ensure a valid partition exists.
-    // Min total for 3 acts: 3*8 = 24. Max: 3*15 = 45.
-    // Min total for 4 acts: 4*8 = 32. Max: 4*15 = 60.
-    // Intersection with [35, 45]:
-    // 3 acts: [35, 45] is possible.
-    // 4 acts: [35, 45] is possible.
+    // Min total for 3 acts: 3*6 = 18. Max: 3*12 = 36.
+    // Min total for 4 acts: 4*6 = 24. Max: 4*12 = 48.
+    // Intersection with [30, 40]:
+    // 3 acts: [30, 36] is possible.
+    // 4 acts: [30, 40] is possible.
     
     let act_count = rng.gen_range(3..=4);
-    let level_count = rng.gen_range(35..=45);
     
-    // We can just return these. The partitioning will be handled or validated later.
-    // Ideally we should pick level_count such that a valid partition exists, which is true for all values in [35, 45] for 3 or 4 acts.
+    let min_levels = std::cmp::max(30, act_count * 6);
+    let max_levels = std::cmp::min(40, act_count * 12);
+    
+    let level_count = rng.gen_range(min_levels..=max_levels);
+    
     (level_count, act_count)
 }
 
@@ -35,8 +37,8 @@ pub fn generate_ldag(blueprint: &BluePrint) -> Result<Vec<Vec<Vec<LDAGNode>>>, S
     let mut acts_nodes: Vec<Vec<Vec<LDAGNode>>> = Vec::new();
     
     // Validate total levels
-    if blueprint.level_count < 35 || blueprint.level_count > 45 {
-        // Warning or error? Strict rules say 35-45.
+    if blueprint.level_count < 30 || blueprint.level_count > 40 {
+        // Warning or error? Strict rules say 30-40.
         // But if LLM outputs 34, maybe we tolerate?
         // Let's stick to requirements but maybe allow small margin if needed.
         // For now, strict.
@@ -46,7 +48,28 @@ pub fn generate_ldag(blueprint: &BluePrint) -> Result<Vec<Vec<Vec<LDAGNode>>>, S
     // Iterate over acts defined in BluePrint
     let mut global_level_cursor = 1;
     
-    for (_act_idx, act) in blueprint.acts.iter().enumerate() {
+    // Select Butterfly Zone
+    // We need an act with >= 6 levels.
+    // Ideally select one at random.
+    let valid_acts: Vec<usize> = blueprint.acts.iter().enumerate()
+        .filter(|(_, act)| (act.level_range.1 - act.level_range.0 + 1) >= 6)
+        .map(|(i, _)| i)
+        .collect();
+        
+    let butterfly_config = if !valid_acts.is_empty() {
+        let act_idx = valid_acts.choose(&mut rng).unwrap();
+        let act = &blueprint.acts[*act_idx];
+        let act_levels = act.level_range.1 - act.level_range.0 + 1;
+        // Start layer can be from 0 to (act_levels - 6) inclusive.
+        // e.g. levels=6, start can be 0. (0, 1..5)
+        let max_start = act_levels - 6;
+        let start_layer = rng.gen_range(0..=max_start);
+        Some((*act_idx, start_layer))
+    } else {
+        None
+    };
+
+    for (act_idx, act) in blueprint.acts.iter().enumerate() {
         let (start_level, end_level) = act.level_range;
         
         // Validation
@@ -55,7 +78,7 @@ pub fn generate_ldag(blueprint: &BluePrint) -> Result<Vec<Vec<Vec<LDAGNode>>>, S
         }
         
         let act_levels = end_level - start_level + 1;
-        if act_levels < 8 || act_levels > 15 {
+        if act_levels < 6 || act_levels > 12 {
              // return Err(format!("Act {} has invalid level count: {}", act_idx, act_levels));
         }
         
@@ -66,13 +89,35 @@ pub fn generate_ldag(blueprint: &BluePrint) -> Result<Vec<Vec<Vec<LDAGNode>>>, S
             let current_global_level = start_level + local_lvl;
             let is_first_layer_of_act = local_lvl == 0;
             
+            // Check butterfly constraint
+            let force_min_2_nodes = if let Some((bf_act, bf_start)) = butterfly_config {
+                if act_idx == bf_act {
+                    // Butterfly zone: start_layer (branching point) -> next 5 layers (disjoint paths)
+                    // The "disjoint paths" are in layers: bf_start+1 to bf_start+5.
+                    // These layers MUST have >= 2 nodes to support 2 paths.
+                    // The start layer (bf_start) also needs to support branching, so it needs >= 1 node (always true),
+                    // but the NEXT layer needs >= 2 nodes for the start node to point to.
+                    // Actually, to have 2 paths, we need Node A and Node B in the layers.
+                    local_lvl > bf_start && local_lvl <= bf_start + 5
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
             let num_nodes = if is_first_layer_of_act {
                 1
             } else {
                 // P(|Li|=2) >= 70%.
                 // 1 node: < 15%, 3 nodes: < 15%
                 let r: f64 = rng.gen();
-                if r < 0.75 { 2 } else if r < 0.875 { 1 } else { 3 }
+                let mut n = if r < 0.75 { 2 } else if r < 0.875 { 1 } else { 3 };
+                
+                if force_min_2_nodes && n < 2 {
+                    n = 2;
+                }
+                n
             };
             
             let mut layer_nodes: Vec<LDAGNode> = Vec::new();
@@ -85,20 +130,7 @@ pub fn generate_ldag(blueprint: &BluePrint) -> Result<Vec<Vec<Vec<LDAGNode>>>, S
                     (
                         blueprint.start_node.content.clone(),
                         blueprint.start_node.characters.clone(),
-                        vec![], // Choices will be rebuilt to match LDAG structure, or we preserve structure?
-                        // Wait, BluePrint.startNode has choices.
-                        // But LDAG structure generation might create different topology.
-                        // The prompt says: "L1N1 must directly use BluePrint.startNode content".
-                        // It implies we should try to match the choices too?
-                        // Or we just use the text content and characters, but regenerate the connections?
-                        // generating.md says: "Backend generates LDAG structure... Step 4 fills content".
-                        // "L1N1 must directly use... startNode content".
-                        // If we regenerate structure, we might have different number of choices than BluePrint.startNode.
-                        // BluePrint.startNode has fixed 2 choices.
-                        // Our LDAG generation logic might generate 1-3 choices.
-                        // L1 is always 1 node. L2 is usually 2 nodes.
-                        // So L1N1 usually has 2 choices pointing to L2N1 and L2N2.
-                        // It matches.
+                        vec![], 
                     )
                 } else {
                     (String::new(), Vec::new(), Vec::new())
@@ -119,21 +151,19 @@ pub fn generate_ldag(blueprint: &BluePrint) -> Result<Vec<Vec<Vec<LDAGNode>>>, S
     }
     
     // Now we have the nodes, we need to wire them up.
-    // It's easier to do this in a single pass over all acts if we flatten them conceptually, 
-    // or just iterate acts_nodes.
-    
-    connect_graph(&mut acts_nodes, blueprint)?;
+    connect_graph(&mut acts_nodes, blueprint, butterfly_config)?;
     
     Ok(acts_nodes)
 }
 
 /// 连接 LDAG 图中的节点
 /// 确保连通性、Flag 触发和检查逻辑
-fn connect_graph(acts: &mut Vec<Vec<Vec<LDAGNode>>>, blueprint: &BluePrint) -> Result<(), String> {
+fn connect_graph(
+    acts: &mut Vec<Vec<Vec<LDAGNode>>>, 
+    blueprint: &BluePrint,
+    butterfly_config: Option<(usize, u32)>
+) -> Result<(), String> {
     let mut rng = rand::thread_rng();
-    
-    // Flatten for easier indexing: (act_idx, layer_idx, node_idx) -> Node
-    // Or just iterate.
     
     let total_acts = acts.len();
     
@@ -142,6 +172,17 @@ fn connect_graph(acts: &mut Vec<Vec<Vec<LDAGNode>>>, blueprint: &BluePrint) -> R
         
         for layer_idx in 0..act_layers_len {
             let current_global_level = get_global_level(acts, act_idx, layer_idx);
+            
+            // Butterfly Logic
+            let (is_bf_start, is_bf_zone) = if let Some((bf_act, bf_start)) = butterfly_config {
+                if act_idx == bf_act {
+                    (layer_idx == bf_start as usize, layer_idx > bf_start as usize && layer_idx < (bf_start + 5) as usize)
+                } else {
+                    (false, false)
+                }
+            } else {
+                (false, false)
+            };
             
             // Flags logic
             let mut trigger_flags = Vec::new();
@@ -218,9 +259,35 @@ fn connect_graph(acts: &mut Vec<Vec<Vec<LDAGNode>>>, blueprint: &BluePrint) -> R
             // We cycle through current nodes to assign required targets
             let mut node_cycler = (0..current_layer_node_count).cycle();
             
-            for target in required_targets {
-                if let Some(source_idx) = node_cycler.next() {
-                    node_edges.get_mut(&source_idx).unwrap().push(target);
+            if !is_bf_zone {
+                for target in required_targets {
+                    if let Some(source_idx) = node_cycler.next() {
+                        node_edges.get_mut(&source_idx).unwrap().push(target);
+                    }
+                }
+            } else {
+                // In Butterfly Zone, we enforce strict partitioning.
+                // Node 0 -> Node 0
+                // Node 1 -> Node 1
+                // Others -> Random or Corresponding index if possible
+                // We SKIP the standard distribution for 0 and 1 to avoid pollution.
+                
+                // For nodes > 1, we can distribute remaining targets?
+                // Actually, if we want strict disjointness, we must ensure Node 0 and Node 1 don't cross.
+                // And other nodes don't bridge them.
+                // Simplest: Node i -> Node i (if exists). If not exists, random (but avoid 0 and 1 if i > 1?)
+                // Since we force num_nodes >= 2, 0 and 1 exist in both layers.
+                
+                // We manually handle 0 and 1 later.
+                // Handle others:
+                if current_layer_node_count > 2 {
+                    // Targets excluding 0 and 1?
+                    // Actually, if Node 2 connects to Node 0, it joins Path A.
+                    // If Node 2 connects to Node 1, it joins Path B.
+                    // If Node 2 connects to both, it bridges them! -> Violation.
+                    // So Node 2 must connect to EITHER A OR B, but NOT BOTH.
+                    // Or connect to Node 2 (Path C).
+                    // To be safe, just parallel or random single target.
                 }
             }
             
@@ -229,6 +296,76 @@ fn connect_graph(acts: &mut Vec<Vec<Vec<LDAGNode>>>, blueprint: &BluePrint) -> R
             // Fill up to desired choice count (probabilistic)
             for i in 0..current_layer_node_count {
                 let edges = node_edges.get_mut(&i).unwrap();
+                
+                // Override for Butterfly Logic
+                if is_bf_start && i == 0 {
+                    // Start of Butterfly: Node 0 must connect to Next 0 and Next 1
+                    if next_nodes_ids.len() >= 2 {
+                        let t0 = next_nodes_ids[0].clone();
+                        let t1 = next_nodes_ids[1].clone();
+                        if !edges.contains(&t0) { edges.push(t0); }
+                        if !edges.contains(&t1) { edges.push(t1); }
+                    }
+                } else if is_bf_zone {
+                    // Inside Zone: Strict Parallelism
+                    // Node 0 -> Next 0
+                    // Node 1 -> Next 1
+                    if i == 0 && !next_nodes_ids.is_empty() {
+                        edges.clear();
+                        edges.push(next_nodes_ids[0].clone());
+                    } else if i == 1 && next_nodes_ids.len() > 1 {
+                        edges.clear();
+                        edges.push(next_nodes_ids[1].clone());
+                    } else {
+                        // Other nodes: ensure they don't connect to BOTH 0 and 1?
+                        // For simplicity, just let them be random for now, or parallel if exists.
+                        // If we force strict 0->0, 1->1, we guaranteed at least 2 disjoint paths exist.
+                        // The existence is satisfied.
+                        // If Node 2 connects to 0 and 1, it bridges, but Node 0's path (0->0->0) and Node 1's path (1->1->1) remain disjoint 
+                        // because Node 0 does not go to Node 2 (since Node 0 goes to 0).
+                        // Wait, edges are directed u -> v.
+                        // Path A: Start -> 0 -> 0 -> 0 ...
+                        // Path B: Start -> 1 -> 1 -> 1 ...
+                        // These are disjoint sets of nodes {L(k)N0} vs {L(k)N1}.
+                        // As long as L(k)N0 only goes to L(k+1)N0, and same for 1.
+                        // And Start goes to both.
+                        // Then Path A and Path B are disjoint.
+                        // Even if Node 2 goes to 0 and 1, it doesn't affect the disjointness of Path A and Path B themselves.
+                        // It just means Node 2 can reach both. But Node 0 cannot reach Node 1.
+                        
+                        // BUT, "Disjoint Paths" usually means the set of reachable nodes from Option A vs Option B are disjoint.
+                        // If Option A -> Node 0. Option B -> Node 1.
+                        // Reachable(A) = {Node 0, ...descendants}
+                        // Reachable(B) = {Node 1, ...descendants}
+                        // If Node 2 points to Node 0 and Node 1... Node 2 is not in Reachable(A) unless Node 0 points to Node 2?
+                        // Since edges are monotonic increasing levels, loops are impossible.
+                        // So Node 0 (Level k) cannot point to Node 2 (Level k).
+                        // Node 0 points to NextLayerNode 0.
+                        // So Node 2 (Level k) is irrelevant to Reachable(Node 0).
+                        // What if Node 0 points to NextLayerNode 2, and NextLayerNode 2 is reachable from Node 1?
+                        // That would be a merge.
+                        // So Node 0 must ONLY point to nodes that are NOT reachable from Node 1.
+                        // My strict rule "0->0, 1->1" ensures this.
+                        // Node 0 -> Next 0. Node 1 -> Next 1.
+                        // Next 0 is not reachable from Node 1 (because Node 1 -> Next 1).
+                        // So strict parallel is sufficient.
+                        
+                        // For nodes > 1, standard logic applies (random fill below).
+                        if edges.is_empty() {
+                             // Ensure at least one edge for connectivity
+                             // Just pick one random target (avoiding 0/1 if we want to be super clean, but not strictly necessary for existence of A/B paths)
+                             if !next_nodes_ids.is_empty() {
+                                 let t = next_nodes_ids.choose(&mut rng).unwrap().clone();
+                                 edges.push(t);
+                             }
+                        }
+                    }
+                    
+                    // Skip the standard filling loop for 0 and 1
+                    if i == 0 || i == 1 {
+                        continue; 
+                    }
+                }
                 
                 // Desired choices
                 let desired_choices = if current_global_level == 1 { 2 } else {

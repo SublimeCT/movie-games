@@ -195,7 +195,7 @@ pub async fn call_glm_with_api_key(
                 content: prompt.clone(),
             },
         ],
-        max_tokens: 8192,
+        max_tokens: 7890,
         response_format: if json_mode {
             Some(ResponseFormat { r#type: "json_object".to_string() })
         } else {

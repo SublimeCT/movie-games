@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { useStorage } from '@vueuse/core';
-import { ArrowLeft, ChevronRight, Home as HomeIcon, X } from 'lucide-vue-next';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useGameState } from '../hooks/useGameState';
-import type { Character, Choice, Ending } from '../types/movie';
+import type { Character, Choice, Ending, MovieTemplate, StoryNode } from '../types/movie';
+import type { Story } from '../types/Story';
+import type { LDAGNode, LDAGNodeChoice } from '../types/LayeredDirectedAcyclicGraph';
+import { buildNodeMap } from '../utils/story';
+import type { ConditionalNextNodeId } from '../types/LayeredDirectedAcyclicGraph';
 import CharacterAvatar from './ui/CharacterAvatar.vue';
 import ThreeDCard from './ui/ThreeDCard.vue';
+import { db } from '../utils/db';
 
 // 为选项按钮生成动画延迟
 const getStaggerDelay = (index: number) => `${index * 50}ms`;
@@ -25,6 +28,18 @@ const router = useRouter();
 
 // 使用 hook 获取游戏数据和方法
 const { gameData, handleGameEnd } = useGameState();
+
+const nodesMap = computed(() => {
+  const data = gameData.value;
+  if (!data) return {};
+  if ('nodes' in data && data.nodes) {
+    return data.nodes;
+  }
+  if ('actList' in data && data.actList) {
+    return buildNodeMap(data as Story);
+  }
+  return {};
+});
 
 const baseTitle = document.title;
 let titleApplied = false;
@@ -72,10 +87,17 @@ onUnmounted(() => {
  */
 const startNodeId = computed(() => {
   const data = gameData.value;
-  if (!data?.nodes) return '';
-  const keys = Object.keys(data.nodes);
+  if (!data) return '';
+  
+  // Story (BluePrint)
+  if ('startNode' in data && data.startNode) {
+    return data.startNode.id;
+  }
+
+  const nodes = nodesMap.value;
+  const keys = Object.keys(nodes);
   if (keys.length === 0) return '';
-  if (data.nodes.start) return 'start';
+  if (nodes.start) return 'start';
   if (keys.includes('start')) return 'start';
   if (keys.includes('root')) return 'root';
   if (keys.includes('1')) return '1';
@@ -116,27 +138,39 @@ const handleSpotlightLeave = () => {
 /**
  * Persistent state for the current node ID.
  */
-const currentNodeId = useStorage<string>('mg_current_node', '');
+const currentNodeId = ref<string>('');
 
 /**
  * Persistent state for player variables and flags.
  */
-const playerState = useStorage('mg_player_state', { flags: {}, variables: {} });
-
-const affinityState = useStorage<Record<string, number>>(
-  'mg_affinity_state',
-  {},
-);
+const playerState = ref<{ flags: Record<string, boolean>; variables: Record<string, any> }>({ flags: {}, variables: {} });
 
 /**
  * History stack for the back button functionality.
  * Stores previous node IDs and player states.
  */
-// biome-ignore lint/suspicious/noExplicitAny: State needs to be flexible
-const historyStack = useStorage<{ nodeId: string; state: any }[]>(
-  'mg_history_stack',
-  [],
-);
+const historyStack = ref<{ nodeId: string; state: any }[]>([]);
+
+// Save session to DB
+const saveSession = async () => {
+    const data = gameData.value;
+    if (!data) return;
+    
+    // Get ID safely
+    const gameId = data.requestId || (data as any).projectId || (data as any).id;
+    if (!gameId) return;
+
+    await db.setActiveSession({
+        gameId,
+        currentNodeId: currentNodeId.value,
+        playerState: JSON.parse(JSON.stringify(playerState.value)),
+        historyStack: JSON.parse(JSON.stringify(historyStack.value)),
+    });
+};
+
+watch([currentNodeId, playerState, historyStack], () => {
+    saveSession();
+}, { deep: true });
 
 /**
  * Watch for node changes to check if the new node is an ending.
@@ -154,12 +188,26 @@ const checkEnding = (nodeId: string) => {
   const data = gameData.value;
   if (!data) return;
 
-  const node = data.nodes?.[nodeId];
+  const nodes = nodesMap.value;
+  const node = nodes[nodeId];
 
   // Check for explicit endings
   if (data.endings?.[nodeId]) {
+    const rawEnding = data.endings[nodeId];
+    let ending: Ending;
+    if ('type' in rawEnding) {
+       ending = rawEnding as Ending;
+    } else {
+       // Story EndingNode
+       ending = {
+         type: 'neutral',
+         description: (rawEnding as any).content,
+         reachedAt: new Date().toISOString()
+       };
+    }
+
     handleGameEnd({
-      ...data.endings[nodeId],
+      ...ending,
       endingKey: nodeId,
       nodeId,
       reachedAt: new Date().toISOString(),
@@ -169,13 +217,13 @@ const checkEnding = (nodeId: string) => {
 
   const choices = node?.choices || [];
   if (node && choices.length === 0) {
-    if (nodeId === 'start' || nodeId === 'root') {
-      if (data.nodes['1']?.choices?.length) {
+    if (nodeId === 'start' || nodeId === 'root' || (data as any).startNode?.id === nodeId) {
+      if (nodes['1']?.choices?.length) {
         currentNodeId.value = '1';
         return;
       }
 
-      const keys = Object.keys(data.nodes).sort((a, b) => {
+      const keys = Object.keys(nodes).sort((a, b) => {
         const aIsNum = /^\d+$/.test(a);
         const bIsNum = /^\d+$/.test(b);
         if (aIsNum && bIsNum) return Number(a) - Number(b);
@@ -185,7 +233,7 @@ const checkEnding = (nodeId: string) => {
       });
 
       for (const key of keys) {
-        if (data.nodes[key]?.choices?.length) {
+        if (nodes[key]?.choices?.length) {
           currentNodeId.value = key;
           return;
         }
@@ -226,7 +274,6 @@ const goHome = () => {
   localStorage.removeItem('mg_player_state');
   localStorage.removeItem('mg_history_stack');
   localStorage.removeItem('mg_ending');
-  localStorage.removeItem('mg_affinity_state');
   
   // Only clear active game data if we are NOT in shared mode.
   // In shared mode, we want to preserve the data so the user can click "Design" in Home.
@@ -266,7 +313,19 @@ const confirmGoHome = () => {
  * Initialize the game state on mount.
  * Sets the start node if not set, and checks for endings.
  */
-onMounted(() => {
+onMounted(async () => {
+  // Restore session from DB
+  try {
+      const session = await db.getActiveSession();
+      if (session) {
+          currentNodeId.value = session.currentNodeId;
+          playerState.value = session.playerState;
+          historyStack.value = session.historyStack;
+      }
+  } catch (e) {
+      console.error('Failed to restore session:', e);
+  }
+
   // Try to load data from sessionStorage first (from Generating page)
   // This is deprecated as we now use global state in App.vue
   /*
@@ -282,10 +341,12 @@ onMounted(() => {
   */
 
   const data = gameData.value;
-  if (!data?.nodes) return;
+  const nodes = nodesMap.value;
+  if (Object.keys(nodes).length === 0) return;
+  
   if (
     !currentNodeId.value ||
-    (!data.nodes[currentNodeId.value] && !data.endings?.[currentNodeId.value])
+    (!nodes[currentNodeId.value] && !data?.endings?.[currentNodeId.value])
   ) {
     resetToStart();
   }
@@ -295,10 +356,12 @@ onMounted(() => {
 watch(
   () => gameData.value,
   (next) => {
-    if (!next?.nodes) return;
+    const nodes = nodesMap.value;
+    if (Object.keys(nodes).length === 0) return;
+    
     if (
       !currentNodeId.value ||
-      (!next.nodes[currentNodeId.value] && !next.endings?.[currentNodeId.value])
+      (!nodes[currentNodeId.value] && !next?.endings?.[currentNodeId.value])
     ) {
       resetToStart();
     }
@@ -328,15 +391,16 @@ const handleBack = () => {
  * Computed property for the current node object.
  */
 const currentNode = computed(
-  () => gameData.value?.nodes?.[currentNodeId.value],
+  () => nodesMap.value[currentNodeId.value],
 );
 
 const missingNode = computed(() => {
   const data = gameData.value;
-  if (!data?.nodes) return false;
+  const nodes = nodesMap.value;
+  if (!data || Object.keys(nodes).length === 0) return false;
   if (!currentNodeId.value) return false;
   if (data.endings?.[currentNodeId.value]) return false;
-  return !data.nodes[currentNodeId.value];
+  return !nodes[currentNodeId.value];
 });
 
 /**
@@ -388,9 +452,10 @@ const currentAgents = computed(() => {
   });
 
   if (agents.length === 0) {
-    const seed = (data?.projectId || data?.title || 'mg')
+    // projectId only on MovieTemplate, title on both
+    const seed = ((data as any)?.projectId || data?.title || 'mg')
       .split('')
-      .reduce((a, b) => a + b.charCodeAt(0), 0);
+      .reduce((a: number, b: string) => a + b.charCodeAt(0), 0);
     const gender = seed % 2 === 0 ? 'Male' : 'Female';
     agents.push({
       id: 'mg_player',
@@ -461,26 +526,32 @@ watch(
     const names = Object.values(chars)
       .map((c) => String(c.name || '').trim())
       .filter(Boolean);
-
-    const base: Record<string, number> = {};
-    for (const name of names) {
-      if (protagonist && name === protagonist) continue;
-      const cur = affinityState.value[name];
-      const curNum = typeof cur === 'number' && Number.isFinite(cur) ? cur : 50;
-      base[name] = Math.max(0, Math.min(100, Math.round(curNum)));
-    }
-
-    affinityState.value = base;
   },
   { immediate: true },
 );
 
-/**
- * Computed property for the available choices in the current node.
- */
-const availableChoices = computed(() => {
+const availableChoices = computed<Array<Choice & { triggerFlag?: string }>>(() => {
   if (!currentNode.value?.choices) return [];
-  return currentNode.value.choices;
+  
+  const flags = playerState.value.flags || {};
+  
+  return currentNode.value.choices.map((c: any) => {
+    let nextId = '';
+    const rawNextId = c.nextNodeId;
+    
+    if (typeof rawNextId === 'string') {
+      nextId = rawNextId;
+    } else if (typeof rawNextId === 'object' && rawNextId && 'checkFlag' in rawNextId) {
+      const { checkFlag, trueId, falseId } = rawNextId as ConditionalNextNodeId;
+      nextId = flags[checkFlag] ? trueId : falseId;
+    }
+    
+    return {
+      text: c.text || c.content || '',
+      nextNodeId: nextId,
+      triggerFlag: c.triggerFlag
+    };
+  });
 });
 
 /**
@@ -488,7 +559,7 @@ const availableChoices = computed(() => {
  * Updates history and navigates to the next node.
  * @param {Choice} choice - The selected choice.
  */
-const handleChoice = async (choice: Choice) => {
+const handleChoice = async (choice: Choice & { triggerFlag?: string }) => {
   navigationError.value = '';
 
   const canonicalizeEndingId = (raw: string) => {
@@ -504,50 +575,12 @@ const handleChoice = async (choice: Choice) => {
 
   const nextId = canonicalizeEndingId(choice.nextNodeId);
 
-  const data = gameData.value;
-  const effect = choice.affinityEffect;
-  if (data?.characters && effect) {
-    const idToName = new Map(
-      Object.values(data.characters)
-        .map(
-          (c) =>
-            [String(c.id || '').trim(), String(c.name || '').trim()] as const,
-        )
-        .filter(([id, name]) => Boolean(id && name)),
-    );
-
-    const present = Array.isArray(currentNode.value?.characters)
-      ? (currentNode.value?.characters as string[])
-      : [];
-
-    const allowed = new Set(
-      present
-        .map((raw) => {
-          const v = String(raw || '').trim();
-          return idToName.get(v) || v;
-        })
-        .filter(Boolean),
-    );
-
-    const rawTarget = String(effect.characterId || '').trim();
-    const target = idToName.get(rawTarget) || rawTarget;
-    const protagonist = protagonistName.value;
-
-    if (
-      target &&
-      allowed.has(target) &&
-      (!protagonist || target !== protagonist)
-    ) {
-      const cur = affinityState.value[target];
-      const curNum = typeof cur === 'number' && Number.isFinite(cur) ? cur : 50;
-      const delta = Math.max(
-        -20,
-        Math.min(20, Math.round(Number(effect.delta) || 0)),
-      );
-      const next = Math.max(0, Math.min(100, Math.round(curNum + delta)));
-      affinityState.value = { ...affinityState.value, [target]: next };
-    }
+  if (choice.triggerFlag) {
+    if (!playerState.value.flags) playerState.value.flags = {};
+    playerState.value.flags[choice.triggerFlag] = true;
   }
+
+  const data = gameData.value;
 
   // Navigate
   if (nextId === 'END') {
@@ -564,8 +597,21 @@ const handleChoice = async (choice: Choice) => {
 
   // Check if nextNodeId is an ending ID
   if (data?.endings?.[nextId]) {
+    const rawEnding = data.endings[nextId];
+    let ending: Ending;
+    if ('type' in rawEnding) {
+       ending = rawEnding as Ending;
+    } else {
+       // Story EndingNode
+       ending = {
+         type: 'neutral',
+         description: (rawEnding as any).content,
+         reachedAt: new Date().toISOString()
+       };
+    }
+
     handleGameEnd({
-      ...data.endings[nextId],
+      ...ending,
       endingKey: nextId,
       nodeId: currentNodeId.value,
       reachedAt: new Date().toISOString(),
@@ -573,7 +619,8 @@ const handleChoice = async (choice: Choice) => {
     return;
   }
 
-  if (!data?.nodes?.[nextId]) {
+  const nodes = nodesMap.value;
+  if (!nodes[nextId]) {
     navigationError.value = `无效跳转：${choice.nextNodeId}`;
     return;
   }
@@ -606,17 +653,6 @@ const getEmotion = (agent: Character) => {
   if (text.match(/surprise|shock|gasp|stun/)) return 'surprised';
 
   const name = String(agent.name || '').trim();
-  const protagonist = protagonistName.value;
-  if (name && (!protagonist || name !== protagonist)) {
-    const cur = affinityState.value[name];
-    const curNum = typeof cur === 'number' && Number.isFinite(cur) ? cur : 50;
-    const v = Math.max(0, Math.min(100, curNum));
-    if (v >= 75) return 'happy';
-    if (v <= 25) return 'angry';
-    if (v <= 45) return 'sad';
-    return 'neutral';
-  }
-
   const emotions = ['neutral', 'happy', 'sad', 'angry', 'surprised'];
   const hash = (currentNodeId.value + agent.name)
     .split('')
@@ -624,9 +660,13 @@ const getEmotion = (agent: Character) => {
   return emotions[hash % emotions.length];
 };
 
-const backgroundImageBase64 = computed(() =>
-  (gameData.value?.backgroundImageBase64 || '').trim(),
-);
+const backgroundImageBase64 = computed(() => {
+  const data = gameData.value;
+  if (data && 'backgroundImageBase64' in data) {
+    return (data.backgroundImageBase64 || '').trim();
+  }
+  return '';
+});
 
 const backgroundBaseStyle = computed<Record<string, string>>(() => {
   const img = backgroundImageBase64.value;

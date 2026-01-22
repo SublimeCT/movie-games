@@ -196,7 +196,7 @@ pub(crate) fn construct_expand_character_prompt(req: &ExpandCharacterRequest) ->
 const BLUEPRINT_TYPES_DEF: &str = r#"
 /** 剧本 */
 export interface BluePrint {
-  /** 层数, 值为 35-45 */
+  /** 层数, 值为 30-40 */
   levelCount: number
   /** 幕数, 值为 3-4 */
   actCount: number
@@ -212,9 +212,15 @@ export interface BluePrint {
     [flagName: string]: {
       /** 标记的详细描述, 必须是确切具体的内容, 不超过 25 字 */
       content: string
-      /** 触发/获得 该标记的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成 */
+      /**
+       * 触发/获得 该标记的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成
+       * @description 指在该 level 中的 **某个节点的某个选项** 会触发该标记, 允许该 level 有多个节点触发, 但 **禁止该 level 的所有节点的所有选项都触发**
+       */
       triggerLevel: number
-      /** 此 flag 产生副作用的 level 索引, 值为 {@link triggerLevel}-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成 */
+      /**
+       * 此 flag 产生副作用的 level 索引, 值为 {@link triggerLevel}-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成
+       * @description 指在该 level 中的 **某个节点的某个选项** 会根据该标记产生分支/跳转, 允许该 level 有多个节点产生影响, 但 **禁止该 level 的所有节点的所有选项都产生影响**
+       */
       effectLevel: number
     }
   }
@@ -223,7 +229,10 @@ export interface BluePrint {
     [endingName: string]: {
       /** 结局的详细描述, 不超过 35 字 */
       content: string
-      /** 触发 该结局的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成 */
+      /**
+       * 触发 该结局的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成
+       * @description 指在该 level 中的 **某个节点的某个选项** 会触发该结局, 允许该 level 有多个节点触发, 但 **禁止该 level 的所有节点的所有选项都触发**
+       */
       triggerLevel: number
     }
   }
@@ -242,24 +251,24 @@ export interface BluePrint {
 type NodeId = `L${number}N${number}`
 
 /** 起始节点 */
-interface StartNode {
-  /** 节点 ID, 值为 L1N1 */
-  id: 'L1N1'
-  /** 节点内容, 必须以第一个主角的第一人称视角编写, 不超过 60 字 */
-  content: string
-  /** 该节点的角色 name, 数量控制在 1-3 个 */
-  characters: Array<string>
-  /** 选项列表, 数量为 2 */
-  choices: [StartNodeChoice, StartNodeChoice]
-}
-
-/** 起始节点的选项 */
-interface StartNodeChoice {
-  /** 该选项的内容, 必须以第一个主角的第一人称视角编写, 不超过 35 字 */
-  content: string
-  /** 该选项指向的下一个节点 ID */
-  nextNodeId: NodeId
-}
+  interface StartNode {
+    /** 节点 ID, 值为 L1N1 */
+    id: 'L1N1'
+    /** 节点内容, 必须以第一个主角的第一人称视角编写, 不超过 60 字 */
+    content: string
+    /** 该节点的角色 name, 数量控制在 1-3 个 */
+    characters: Array<string>
+    /** 选项列表, 数量为 2 */
+    choices: [StartNodeChoice, StartNodeChoice]
+  }
+  
+  /** 起始节点的选项 */
+  interface StartNodeChoice {
+    /** 该选项的内容, 必须以第一个主角的第一人称视角编写, 不超过 35 字 */
+    content: string
+    /** 该选项指向的下一个节点 ID */
+    nextNodeId: NodeId
+  }
 
 /** 剧本中的幕(阶段) */
 interface BluePrintAct {
@@ -425,40 +434,57 @@ pub(crate) fn construct_fill_node_content_prompt(
     let ldag_nodes_json = serde_json::to_string_pretty(ldag_nodes).unwrap_or_default();
 
     format!(
-        r#"# 角色定义
-你是一位互动电影游戏编剧和总导演, 你擅长创作 引人入胜 / 逻辑严密 / 充满情感冲击力 的多分支剧情
+        r#"# Role Definition
+You are an award-winning interactive movie scriptwriter and director. You excel at creating immersive, emotionally resonant, and logically tight multi-branch narratives. Your writing style is cinematic, engaging, and literary.
 
-## 主题
+## Theme
 {title}
 
-## 剧情简稿
+## Synopsis
 {summary}
 
-## 角色
+## Characters
 {characters}
 
-## 当前幕剧情信息
+## Current Act Information
 {act_info}
 
-## 任务
-你需要根据给定的 **剧情节点图结构** 和 **当前幕剧情信息**, 为每个节点填充具体的 **剧情内容** 和 **选项内容**。
+## Task
+Based on the provided **LDAG Structure** (Layered Directed Acyclic Graph) and **Current Act Information**, fill in the specific **Story Content** and **Choice Content** for each node.
 
-## 剧情节点图结构
+## LDAG Structure (Skeleton)
 {ldag_nodes}
 
-## 输出要求
-请输出符合以下 TypeScript 类型定义的 JSON 数据, 也就是一个 `LDAGNodes` 类型的 JSON 数据:
+## Writing Requirements (CRITICAL)
+1.  **Cinematic & Literary Excellence**: The content MUST read like a high-quality literary novel or a top-tier movie script. ABSOLUTELY NO dry, summary-like, or Wikipedia-style descriptions. Use "Show, Don't Tell" techniques masterfully.
+2.  **Immersive First-Person Perspective**: All content MUST be written from the **First Protagonist's** first-person perspective ("I"). You are the protagonist. Dive deep into inner thoughts, conflicting emotions, and immediate reactions.
+3.  **Sensory Immersion**: Engage all five senses (Sight, Sound, Smell, Touch, Taste). Describe the texture of surfaces, the temperature of the air, the ambient noise, the specific lighting.
+4.  **Psychological Depth**: Explore the protagonist's internal struggle. What are they afraid of? What do they secretly desire? Reveal their vulnerability and strength.
+5.  **Natural & Subtext-Rich Dialogue**: If there is dialogue, make it sound human and character-specific. Use subtext—what is left unsaid is often more important than what is said.
+6.  **Pacing & Tension**: Control the rhythm. Short sentences for high tension, longer descriptive sentences for moments of reflection. Make the players feel the stakes.
+7.  **Content Length & Density**: Each node's `content` must be substantial (approx. 60-120 words). It should be a complete "beat" or "micro-scene", not just a transition.
+8.  **Meaningful Choices**: Choice text should be concise but emotionally charged, reflecting the protagonist's intent, hesitation, or determination.
+
+## Output Requirements
+Output JSON data conforming to the following TypeScript definitions:
 
 ```typescript
 {types}
+
+// Wrapper interface for JSON Object output
+interface Output {{
+  nodes: LDAGNodes
+}}
 ```
 
-## 注意事项
-1. 保持剧情的连贯性和逻辑性, 必须符合 **当前幕剧情信息** 的描述。
-2. 节点的 ID 和连接关系 **必须** 与输入的 **剧情节点图结构** 完全一致，不能增加、删除或修改节点和连线，只能填充内容。
-3. `content` 字段为剧情文本。
-4. `choices` 字段中的 `content` 为选项文本。
-5. 严格遵守 JSON 格式输出。"#,
+**You MUST output a single JSON object conforming to the `Output` interface (i.e., `{{ "nodes": [...] }}`).**
+
+## Constraints
+1.  **Consistency**: Maintain plot continuity and logic. It MUST align with the **Current Act Information**.
+2.  **Structure Integrity**: Node IDs and connection relationships (choices' nextNodeId) MUST be EXACTLY the same as the input **LDAG Structure**. You CANNOT add, delete, or modify the structure (nodes/edges), ONLY fill in the `content` and `characters`.
+3.  **No Markdown**: **DO NOT output Markdown code blocks (like ```json ... ```). Output the RAW JSON string only.**
+4.  **Strict JSON**: The output must be valid JSON.
+"#,
         title = title,
         summary = summary,
         characters = characters,

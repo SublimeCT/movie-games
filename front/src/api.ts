@@ -1,3 +1,4 @@
+import type { Story } from './types/Story';
 import type { MovieTemplate } from './types/movie';
 
 // 生产环境使用 /api 前缀 (由 Nginx 转发)
@@ -86,12 +87,12 @@ export interface CharacterInput {
 
 interface GenerateResponseData {
   id: string;
-  template: MovieTemplate;
+  story: Story;
 }
 
 export async function generateGame(
   req: GenerateRequest,
-): Promise<MovieTemplate> {
+): Promise<Story> {
   const response = await fetch(`${API_BASE}/generate`, {
     method: 'POST',
     headers: {
@@ -100,30 +101,30 @@ export async function generateGame(
     body: JSON.stringify(req),
   });
 
-  const data = await parseApiResponse<GenerateResponseData | MovieTemplate>(
+  const data = await parseApiResponse<GenerateResponseData>(
     response,
   );
 
   if (data && typeof data === 'object') {
-    if ('template' in data && 'id' in data) {
-      const maybeId = (data as GenerateResponseData).id;
-      const maybeTemplate = (data as GenerateResponseData).template;
-      if (typeof maybeId === 'string' && maybeTemplate) {
-        const template = maybeTemplate as MovieTemplate;
-        template.requestId = maybeId;
-        return template;
-      }
-    }
-
-    if ('projectId' in data) {
-      const template = data as MovieTemplate;
-      console.warn('Backend returned raw template, requestId might be missing');
-      return template;
+    if ('story' in data && 'id' in data) {
+      // Backend returns Story
+      const s = (data as GenerateResponseData).story;
+      // We can attach requestId to Story if we want, but Story type doesn't have it by default?
+      // Story interface in types/Story.ts doesn't have requestId.
+      // We might need to extend it or just return it.
+      // The user said "Frontend must use backend's data structure".
+      // Let's trust Story structure.
+      return s;
     }
   }
 
   console.error('Invalid response data:', data);
   throw new Error('Invalid response format');
+}
+
+interface ImportResponseData {
+  id: string;
+  template: MovieTemplate;
 }
 
 export interface ImportTemplateRequest {
@@ -146,24 +147,19 @@ export async function importGameTemplate(
     body: JSON.stringify(req),
   });
 
-  const data = await parseApiResponse<GenerateResponseData | MovieTemplate>(
+  const data = await parseApiResponse<ImportResponseData>(
     response,
   );
 
   if (data && typeof data === 'object') {
     if ('template' in data && 'id' in data) {
-      const maybeId = (data as GenerateResponseData).id;
-      const maybeTemplate = (data as GenerateResponseData).template;
+      const maybeId = (data as ImportResponseData).id;
+      const maybeTemplate = (data as ImportResponseData).template;
       if (typeof maybeId === 'string' && maybeTemplate) {
         const t = maybeTemplate as MovieTemplate;
         t.requestId = maybeId;
         return t;
       }
-    }
-
-    if ('projectId' in data) {
-      const t = data as MovieTemplate;
-      return t;
     }
   }
 

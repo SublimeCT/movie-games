@@ -5,7 +5,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::types::MovieTemplate;
-    use crate::types::{AffinityEffect, Choice, MetaInfo, Provenance, StoryNode};
+    use crate::types::{Choice, MetaInfo, Provenance, StoryNode};
     use serde_json::{from_str, to_string};
 
     use crate::api_types::GenerateRequest;
@@ -68,35 +68,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn test_choice_serialization_omits_null_affinity_effect() {
-        run_with_timeout(TEST_TIMEOUT, || {
-            let choice = Choice {
-                text: "go".to_string(),
-                next_node_id: "1".to_string(),
-                affinity_effect: None,
-                trigger_flag: None,
-                condition: None,
-            };
-
-            let json = to_string(&choice).unwrap();
-            assert!(!json.contains("affinityEffect"));
-
-            let choice2 = Choice {
-                text: "go".to_string(),
-                next_node_id: "1".to_string(),
-                affinity_effect: Some(AffinityEffect {
-                    character_id: "Alice".to_string(),
-                    delta: 10,
-                }),
-                trigger_flag: None,
-                condition: None,
-            };
-
-            let json2 = to_string(&choice2).unwrap();
-            assert!(json2.contains("affinityEffect"));
-        });
-    }
+    // test_choice_serialization_omits_null_affinity_effect removed because affinity_effect is removed.
 
     #[test]
     fn test_pick_background_prompt_prefers_template_synopsis() {
@@ -240,7 +212,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "go".to_string(),
                         next_node_id: "node_1".to_string(),
-                        affinity_effect: None, trigger_flag: None, condition: None,
+                        trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -424,7 +396,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "go".to_string(),
                         next_node_id: "bad_end".to_string(),
-                        affinity_effect: None, trigger_flag: None, condition: None,
+                        trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -651,7 +623,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "to 02".to_string(),
                         next_node_id: "n_02".to_string(),
-                        affinity_effect: None, trigger_flag: None, condition: None,
+                        trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -668,12 +640,12 @@ mod tests {
                         Choice {
                             text: "back".to_string(),
                             next_node_id: "n_start".to_string(),
-                            affinity_effect: None, trigger_flag: None, condition: None,
+                            trigger_flag: None, condition: None,
                         },
                         Choice {
                             text: "self".to_string(),
                             next_node_id: "n_02".to_string(),
-                            affinity_effect: None, trigger_flag: None, condition: None,
+                            trigger_flag: None, condition: None,
                         },
                     ],
                 },
@@ -738,7 +710,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "go".to_string(),
                         next_node_id: "n_missing".to_string(),
-                        affinity_effect: None, trigger_flag: None, condition: None,
+                        trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -797,7 +769,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "go".to_string(),
                         next_node_id: "n_03".to_string(),
-                        affinity_effect: None, trigger_flag: None, condition: None,
+                        trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -813,7 +785,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "end".to_string(),
                         next_node_id: "ending_good".to_string(),
-                        affinity_effect: None, trigger_flag: None, condition: None,
+                        trigger_flag: None, condition: None,
                     }],
                 },
             );
@@ -829,7 +801,7 @@ mod tests {
                     choices: vec![Choice {
                         text: "end".to_string(),
                         next_node_id: "ending_good".to_string(),
-                        affinity_effect: None, trigger_flag: None, condition: None,
+                        trigger_flag: None, condition: None,
                     }],
                 },
             );

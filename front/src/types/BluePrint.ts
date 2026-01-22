@@ -16,9 +16,15 @@ export interface BluePrint {
     [flagName: string]: {
       /** 标记的详细描述, 必须是确切具体的内容, 不超过 25 字 */
       content: string
-      /** 触发/获得 该标记的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成 */
+      /**
+       * 触发/获得 该标记的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成
+       * @description 指在该 level 中的 **某个节点的某个选项** 会触发该标记, 允许该 level 有多个节点触发, 但 **禁止该 level 的所有节点的所有选项都触发**
+       */
       triggerLevel: number
-      /** 此 flag 产生副作用的 level 索引, 值为 {@link triggerLevel}-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成 */
+      /**
+       * 此 flag 产生副作用的 level 索引, 值为 {@link triggerLevel}-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成
+       * @description 指在该 level 中的 **某个节点的某个选项** 会根据该标记产生分支/跳转, 允许该 level 有多个节点产生影响, 但 **禁止该 level 的所有节点的所有选项都产生影响**
+       */
       effectLevel: number
     }
   }
@@ -27,7 +33,10 @@ export interface BluePrint {
     [endingName: string]: {
       /** 结局的详细描述, 不超过 35 字 */
       content: string
-      /** 触发 该结局的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成 */
+      /**
+       * 触发 该结局的 level 索引, 值为 2-{@link levelCount}, 必须根据实际剧情({@link acts}) 生成
+       * @description 指在该 level 中的 **某个节点的某个选项** 会触发该结局, 允许该 level 有多个节点触发, 但 **禁止该 level 的所有节点的所有选项都触发**
+       */
       triggerLevel: number
     }
   }

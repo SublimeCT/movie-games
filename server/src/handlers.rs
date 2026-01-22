@@ -12,9 +12,9 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::api_types::{
-    CharacterInput, DeleteTemplateRequest, ExpandCharacterRequest, ExpandWorldviewRequest,
-    GenerateRequest, GenerateResponse, ImportTemplateRequest, RecordsListRequest, ShareRequest,
-    UpdateTemplateRequest,
+    CharacterInput, DeleteTemplateRequest, ExpandCharacterRequest,
+    ExpandWorldviewRequest, GenerateRequest, GenerateResponse, ImportResponse,
+    ImportTemplateRequest, RecordsListRequest, ShareRequest, UpdateTemplateRequest,
 };
 use crate::db::{
     begin_glm_request_log, create_imported_request, delete_game_by_request_id,
@@ -37,7 +37,7 @@ use crate::prompt::{
 use crate::sensitive::SensitiveFilter;
 use crate::template::{
     normalize_character_ids, normalize_template_endings,
-    normalize_template_nodes, sanitize_affinity_effects, sanitize_template_graph,
+    normalize_template_nodes, sanitize_template_graph,
     convert_story_to_template
 };
 
@@ -328,7 +328,7 @@ pub(crate) async fn import_template(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(payload): Json<ImportTemplateRequest>,
-) -> Result<Json<ApiResponse<GenerateResponse>>, Response> {
+) -> Result<Json<ApiResponse<ImportResponse>>, Response> {
     // Check strict fields FIRST
     if let Some(theme) = &payload.theme {
         if theme.chars().count() > 20 {
@@ -417,7 +417,6 @@ pub(crate) async fn import_template(
     normalize_template_endings(&mut template);
     sanitize_template_graph(&mut template);
     normalize_template_nodes(&mut template);
-    sanitize_affinity_effects(&mut template);
 
     ensure_avatar_fallbacks(&mut template, payload.characters.as_ref());
 
@@ -438,7 +437,7 @@ pub(crate) async fn import_template(
     .await
     .map_err(|e| db_error_response(e).into_response())?;
 
-    Ok(success_response(GenerateResponse { id, template }))
+    Ok(success_response(ImportResponse { id, template }))
 }
 
 pub(crate) async fn share_game(
@@ -565,7 +564,6 @@ pub(crate) async fn update_template(
     normalize_template_endings(&mut template);
     sanitize_template_graph(&mut template);
     normalize_template_nodes(&mut template);
-    sanitize_affinity_effects(&mut template);
 
     ensure_avatar_fallbacks(&mut template, None);
 
@@ -937,16 +935,21 @@ pub(crate) async fn generate(
                 
                 let resp = crate::glm::call_glm_with_api_key(
                     prompt,
-                    false,
+                    true,
                     api_key,
                     base_url,
                     model,
                 ).await?;
                 
-                let filled_nodes: Vec<Vec<LDAGNode>> = serde_json::from_str(&clean_json(&resp))
+                #[derive(serde::Deserialize)]
+                struct WrappedLDAGNodes {
+                    nodes: Vec<Vec<LDAGNode>>
+                }
+
+                let wrapped: WrappedLDAGNodes = serde_json::from_str(&clean_json(&resp))
                     .map_err(|e| format!("JSON Parse Error for Act {}: {}", idx + 1, e))?;
                 
-                Ok::<Vec<Vec<LDAGNode>>, String>(filled_nodes)
+                Ok::<Vec<Vec<LDAGNode>>, String>(wrapped.nodes)
             }));
         }
         
@@ -1015,27 +1018,56 @@ pub(crate) async fn generate(
         }
         blueprint.endings = fixed_endings;
         
+        let meta = crate::types::MetaInfo {
+            logline: payload_clone.theme.clone().unwrap_or_default(),
+            synopsis: payload_clone.synopsis.clone().unwrap_or_default(),
+            genre: payload_clone.genre.clone().unwrap_or_default().join(" / "),
+            language: payload_clone.language.clone().unwrap_or("zh-CN".to_string()),
+            target_runtime_minutes: 0, // Calculated later?
+        };
+
+        // Convert payload characters to Character map
+        let mut characters_map = std::collections::HashMap::new();
+        if let Some(chars) = &payload_clone.characters {
+            for c in chars {
+                let id = c.name.clone(); // Use name as ID for now
+                characters_map.insert(id.clone(), crate::types::Character {
+                    id,
+                    name: c.name.clone(),
+                    gender: c.gender.clone(),
+                    age: 0,
+                    role: c.description.clone(),
+                    background: "".to_string(),
+                    avatar_path: None,
+                });
+            }
+        }
+
         let story = Story {
+            request_id: Some(request_id.to_string()),
+            title: payload_clone.theme.clone().unwrap_or_else(|| "Unknown".to_string()),
+            meta,
+            characters: characters_map,
             blueprint,
             act_list: filled_act_list,
         };
         
         // Step 6: Convert to MovieTemplate for Frontend
-        println!("Converting story to template...");
-        let mut template = convert_story_to_template(story.clone(), uuid::Uuid::new_v4().to_string(), "User".to_string());
+        // println!("Converting story to template...");
+        // let mut template = convert_story_to_template(story.clone(), uuid::Uuid::new_v4().to_string(), "User".to_string());
 
         // Step 7: Enforce Character Consistency
         // Ensure the returned characters match exactly what the frontend requested
-        println!("Enforcing character consistency...");
-        crate::template::enforce_character_consistency(&mut template, payload_clone.characters.clone());
+        // println!("Enforcing character consistency...");
+        // crate::template::enforce_character_consistency(&mut template, payload_clone.characters.clone());
 
         // Save
         println!("Saving processed response to DB...");
-        let template_value = serde_json::to_value(&template).unwrap_or(json!({}));
-        if let Err(e) = save_processed_response(&db, request_id, &template_value).await {
-            eprintln!("Failed to save template: {}", e);
+        let story_value = serde_json::to_value(&story).unwrap_or(json!({}));
+        if let Err(e) = save_processed_response(&db, request_id, &story_value).await {
+            eprintln!("Failed to save story: {}", e);
         }
-        println!("Template saved successfully.");
+        println!("Story saved successfully.");
         
         let duration = start.elapsed();
         finish_glm_request_log(
@@ -1050,7 +1082,7 @@ pub(crate) async fn generate(
         
         Ok(success_response(GenerateResponse {
             id: request_id,
-            template,
+            story,
         }).into_response())
     });
 

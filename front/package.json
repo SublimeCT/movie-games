@@ -18,6 +18,7 @@
     "@vue-flow/minimap": "^1.5.4",
     "@vueuse/core": "^14.1.0",
     "@vueuse/motion": "^3.0.3",
+    "idb": "^8.0.3",
     "lucide-vue-next": "^0.562.0",
     "simplex-noise": "^4.0.3",
     "vue": "^3.5.24",

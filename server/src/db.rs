@@ -72,13 +72,13 @@ impl DbError {
     }
 }
 
-pub(crate) async fn begin_glm_request_log(
+pub(crate) async fn begin_llm_request_log(
     db: &PgPool,
     client_ip: &str,
     user_agent: &str,
     route: &str,
     request_payload: serde_json::Value,
-    glm_prompt: &str,
+    llm_prompt: &str,
     using_override_key: bool,
 ) -> Result<Uuid, DbError> {
     let mut tx = db.begin().await.map_err(|_| DbError::InternalError)?;
@@ -91,7 +91,7 @@ pub(crate) async fn begin_glm_request_log(
 
     if route == "/generate" {
         let daily_total: i64 = sqlx::query_scalar(
-            "select count(*) from glm_requests where route = $1 and created_at > current_date",
+            "select count(*) from llm_requests where route = $1 and created_at > current_date",
         )
         .bind(route)
         .fetch_one(&mut *tx)
@@ -105,7 +105,7 @@ pub(crate) async fn begin_glm_request_log(
 
     // Check daily limit (30 requests per IP per day) - only applies if not using own API Key
     let daily_count: i64 = sqlx::query_scalar(
-        "select count(*) from glm_requests where client_ip = $1 and route = $2 and created_at > current_date",
+        "select count(*) from llm_requests where client_ip = $1 and route = $2 and created_at > current_date",
     )
     .bind(client_ip)
     .bind(route)
@@ -120,7 +120,7 @@ pub(crate) async fn begin_glm_request_log(
     // Check recent request frequency (2 requests per 5 minutes per IP)
     // Only applies if not using own API Key
     let active: i64 = sqlx::query_scalar(
-        "select count(*) from glm_requests where client_ip = $1 and route = $2 and created_at > now() - interval '5 minutes'",
+        "select count(*) from llm_requests where client_ip = $1 and route = $2 and created_at > now() - interval '5 minutes'",
     )
     .bind(client_ip)
     .bind(route)
@@ -134,14 +134,14 @@ pub(crate) async fn begin_glm_request_log(
 
     let id = Uuid::new_v4();
     sqlx::query(
-        "insert into glm_requests (id, client_ip, user_agent, route, status, request_payload, glm_prompt) values ($1, $2, $3, $4, 'running', $5, $6)",
+        "insert into llm_requests (id, client_ip, user_agent, route, status, request_payload, llm_prompt) values ($1, $2, $3, $4, 'running', $5, $6)",
     )
     .bind(id)
     .bind(client_ip)
     .bind(user_agent)
     .bind(route)
     .bind(request_payload)
-    .bind(glm_prompt)
+    .bind(llm_prompt)
     .execute(&mut *tx)
     .await
     .map_err(|_| DbError::InternalError)?;
@@ -151,7 +151,7 @@ pub(crate) async fn begin_glm_request_log(
     Ok(id)
 }
 
-pub(crate) async fn finish_glm_request_log(
+pub(crate) async fn finish_llm_request_log(
     db: &PgPool,
     id: Uuid,
     status: &str,
@@ -160,7 +160,7 @@ pub(crate) async fn finish_glm_request_log(
     response_time_ms: Option<i64>,
 ) {
     let result = sqlx::query(
-        "update glm_requests set status = $1, glm_response = $2, error_text = $3, response_time_ms = $4, updated_at = now() where id = $5",
+        "update llm_requests set status = $1, llm_response = $2, error_text = $3, response_time_ms = $4, updated_at = now() where id = $5",
     )
     .bind(status)
     .bind(response_content)
@@ -171,7 +171,7 @@ pub(crate) async fn finish_glm_request_log(
     .await;
 
     if let Err(e) = result {
-        eprintln!("Failed to update glm_request log: {}", e);
+        eprintln!("Failed to update llm_request log: {}", e);
     }
 }
 
@@ -180,7 +180,7 @@ pub(crate) async fn save_processed_response(
     id: Uuid,
     response: &serde_json::Value,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("update glm_requests set processed_response = $1 where id = $2")
+    sqlx::query("update llm_requests set processed_response = $1 where id = $2")
         .bind(response)
         .bind(id)
         .execute(db)
@@ -193,7 +193,7 @@ pub(crate) async fn get_request_owner(
     id: Uuid,
 ) -> Result<Option<(String, String)>, sqlx::Error> {
     let row: Option<(String, String)> =
-        sqlx::query_as("select client_ip, status from glm_requests where id = $1")
+        sqlx::query_as("select client_ip, status from llm_requests where id = $1")
             .bind(id)
             .fetch_optional(db)
             .await?;
@@ -205,7 +205,7 @@ pub(crate) async fn set_share_status(
     id: Uuid,
     shared: bool,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("update glm_requests set shared = $1 where id = $2")
+    sqlx::query("update llm_requests set shared = $1 where id = $2")
         .bind(shared)
         .bind(id)
         .execute(db)
@@ -226,7 +226,7 @@ pub(crate) async fn delete_game_by_request_id(db: &PgPool, id: Uuid) -> Result<(
         .execute(&mut *tx)
         .await?;
 
-    sqlx::query("delete from glm_requests where id = $1")
+    sqlx::query("delete from llm_requests where id = $1")
         .bind(id)
         .execute(&mut *tx)
         .await?;
@@ -240,7 +240,7 @@ pub(crate) async fn get_game_for_play(
     id: Uuid,
 ) -> Result<Option<(serde_json::Value, bool, String)>, sqlx::Error> {
     let row: Option<(serde_json::Value, bool, String)> = sqlx::query_as(
-        "select processed_response, shared, client_ip from glm_requests where id = $1 and status = 'success'",
+        "select processed_response, shared, client_ip from llm_requests where id = $1 and status = 'success'",
     )
     .bind(id)
     .fetch_optional(db)
@@ -349,7 +349,7 @@ pub(crate) async fn get_shared_record_meta_by_request_id(
 ) -> Result<Option<(bool, Option<String>, String)>, sqlx::Error> {
     let row: Option<(bool, Option<String>, String)> = sqlx::query_as(
         "select gr.shared, sr.shared_at::text, gr.client_ip \
-         from glm_requests gr \
+         from llm_requests gr \
          left join shared_records sr on sr.request_id = gr.id \
          where gr.id = $1",
     )
@@ -387,7 +387,7 @@ pub(crate) async fn list_shared_records_by_request_ids(
             (gr.processed_response->'meta'->>'language') as language, \
             (select count(*) from records r where r.request_id = sr.request_id) as play_count \
          from shared_records sr \
-         join glm_requests gr on gr.id = sr.request_id \
+         join llm_requests gr on gr.id = sr.request_id \
          where sr.request_id = any($1) \
            and (
              gr.client_ip = $2
@@ -413,7 +413,7 @@ pub(crate) async fn create_imported_request(
 ) -> Result<Uuid, DbError> {
     let id = Uuid::new_v4();
     sqlx::query(
-        "insert into glm_requests (id, client_ip, user_agent, route, status, request_payload, glm_prompt, processed_response, template_source) values ($1, $2, $3, '/import', 'success', $4, '[import]', $5, 'import')",
+        "insert into llm_requests (id, client_ip, user_agent, route, status, request_payload, llm_prompt, processed_response, template_source) values ($1, $2, $3, '/import', 'success', $4, '[import]', $5, 'import')",
     )
     .bind(id)
     .bind(client_ip)
@@ -432,7 +432,7 @@ pub(crate) async fn set_request_template_source(
     id: Uuid,
     source: &str,
 ) -> Result<(), DbError> {
-    sqlx::query("update glm_requests set template_source = $1, updated_at = now() where id = $2")
+    sqlx::query("update llm_requests set template_source = $1, updated_at = now() where id = $2")
         .bind(source)
         .bind(id)
         .execute(db)

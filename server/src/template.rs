@@ -44,13 +44,13 @@ pub(crate) fn normalize_template_nodes(template: &mut MovieTemplate) {
     for old_key in keys {
         // Ensure "start" is "start", and other keys are kept as is (or sanitized if needed)
         // User required: "nodes 中的 key 改为纯数字(例如 1 / 2 / 3), 开始节点的 key 固定为 start"
-        // If GLM returns "start", keep it "start".
-        // If GLM returns "1", keep it "1".
-        // If GLM returns "n_1", strip "n_" if user insists on pure numbers, OR just keep as is?
+        // If LLM returns "start", keep it "start".
+        // If LLM returns "1", keep it "1".
+        // If LLM returns "n_1", strip "n_" if user insists on pure numbers, OR just keep as is?
         // User said: "禁止使用之前的 n_xxx 这种类型的节点 key" AND "禁止做任何数据结构的转换"
-        // This is a bit contradictory if GLM returns "n_1".
-        // BUT, if prompt says "key 改为纯数字", then GLM should return "1".
-        // If GLM obeys, we just need to NOT add "n_".
+        // This is a bit contradictory if LLM returns "n_1".
+        // BUT, if prompt says "key 改为纯数字", then LLM should return "1".
+        // If LLM obeys, we just need to NOT add "n_".
 
         let new_key = if old_key == "start" || old_key == "n_start" {
             "start".to_string()

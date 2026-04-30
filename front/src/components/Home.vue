@@ -14,6 +14,8 @@ import {
   Sparkles,
   Wand2,
   X,
+  Settings,
+  Check,
 } from 'lucide-vue-next';
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
@@ -186,18 +188,18 @@ watch([theme, synopsis, selectedGenres, characters], debouncedSave, { deep: true
 
 
 // Persisted State using useStorage (only for settings/params that are not content)
-/** GLM 的默认请求地址（用于判定“是否被修改”） */
-const DEFAULT_GLM_BASE_URL =
-  'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-/** GLM 的默认模型（用于判定“是否被修改”） */
-const DEFAULT_GLM_MODEL = 'glm-4.6v-flash';
+/** DeepSeek 的默认请求地址（用于判定“是否被修改”） */
+const DEFAULT_DEEPSEEK_BASE_URL =
+  'https://api.deepseek.com/chat/completions';
+/** DeepSeek 的默认模型（用于判定“是否被修改”） */
+const DEFAULT_DEEPSEEK_MODEL = 'deepseek-chat';
 
-/** API key for GLM service */
-const glmApiKey = useStorage('mg_glm_api_key', '');
-/** Base URL for GLM service */
-const glmBaseUrl = useStorage('mg_glm_base_url', DEFAULT_GLM_BASE_URL);
-/** Selected GLM model */
-const glmModel = useStorage('mg_glm_model', DEFAULT_GLM_MODEL);
+/** API key for DeepSeek service */
+const deepseekApiKey = useStorage('mg_deepseek_api_key', '');
+/** Base URL for DeepSeek service */
+const deepseekBaseUrl = useStorage('mg_deepseek_base_url', DEFAULT_DEEPSEEK_BASE_URL);
+/** Selected DeepSeek model */
+const deepseekModel = useStorage('mg_deepseek_model', DEFAULT_DEEPSEEK_MODEL);
 
 /**
  * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。
@@ -221,6 +223,7 @@ const apiKeyRequired = ref(false);
 
 const isPromptOpen = ref(false);
 const isPromptLoading = ref(false);
+
 const promptText = ref('');
 
 const isImportOpen = ref(false);
@@ -239,7 +242,7 @@ const baseUrlError = ref('');
  * @returns {boolean} True if valid or empty, false otherwise.
  */
 const validateBaseUrl = () => {
-  const url = glmBaseUrl.value.trim();
+  const url = deepseekBaseUrl.value.trim();
   if (!url) {
     baseUrlError.value = '';
     return true;
@@ -254,7 +257,7 @@ const validateBaseUrl = () => {
   }
 };
 
-watch(glmBaseUrl, () => {
+watch(deepseekBaseUrl, () => {
   if (baseUrlError.value) validateBaseUrl();
 });
 
@@ -482,9 +485,9 @@ const removeCharacter = (index: number) => {
  * Requires API key.
  */
 const handleExpandSynopsis = async () => {
-  const apiKey = glmApiKey.value.trim();
-  const baseUrl = glmBaseUrl.value.trim();
-  const model = glmModel.value.trim();
+  const apiKey = deepseekApiKey.value.trim();
+  const baseUrl = deepseekBaseUrl.value.trim();
+  const model = deepseekModel.value.trim();
   if (!theme.value) {
     error.value = '请先填写主题';
     return;
@@ -532,9 +535,9 @@ const toApiCharacters = (list: LocalCharacterInput[]): ApiCharacterInput[] => {
 };
 
 const handleExpandCharacter = async () => {
-  const apiKey = glmApiKey.value.trim();
-  const baseUrl = glmBaseUrl.value.trim();
-  const model = glmModel.value.trim();
+  const apiKey = deepseekApiKey.value.trim();
+  const baseUrl = deepseekBaseUrl.value.trim();
+  const model = deepseekModel.value.trim();
   if (!theme.value || !synopsis.value) {
     error.value = '请先填写主题和剧情简介';
     return;
@@ -772,9 +775,10 @@ const handleGenerate = async () => {
     characters: toApiCharacters(characters.value),
     language: navigator.language,
     size: selectCogViewSize(),
-    apiKey: glmApiKey.value.trim(),
-    baseUrl: glmBaseUrl.value.trim(),
-    model: glmModel.value.trim(),
+    apiKey: deepseekApiKey.value.trim(),
+    baseUrl: deepseekBaseUrl.value.trim(),
+    model: deepseekModel.value.trim(),
+
   };
   localStorage.setItem('mg_generate_params', JSON.stringify(generateParams));
 
@@ -783,9 +787,9 @@ const handleGenerate = async () => {
 };
 
 const handleGeneratePrompt = async () => {
-  const apiKey = glmApiKey.value.trim();
-  const baseUrl = glmBaseUrl.value.trim();
-  const model = glmModel.value.trim();
+  const apiKey = deepseekApiKey.value.trim();
+  const baseUrl = deepseekBaseUrl.value.trim();
+  const model = deepseekModel.value.trim();
   isPromptLoading.value = true;
   error.value = '';
   isRateLimitError.value = false;
@@ -1430,6 +1434,8 @@ onMounted(() => {
           </div>
 
           <div class="p-8 space-y-6">
+
+
             <div class="space-y-3">
                 <div class="flex items-center justify-between">
                 <label class="text-sm font-bold text-neutral-300 uppercase tracking-wider flex items-center gap-2">
@@ -1439,7 +1445,7 @@ onMounted(() => {
                 <div v-if="apiKeyRequired" class="text-xs text-red-400 font-bold bg-red-500/10 px-2 py-0.5 rounded animate-pulse">必填</div>
                 </div>
                 <input
-                v-model="glmApiKey"
+                v-model="deepseekApiKey"
                 type="password"
                 autocomplete="off"
                 spellcheck="false"
@@ -1457,13 +1463,13 @@ onMounted(() => {
                     Base URL
                 </label>
                 <input
-                v-model="glmBaseUrl"
+                v-model="deepseekBaseUrl"
                 @blur="validateBaseUrl"
                 type="text"
                 autocomplete="off"
                 spellcheck="false"
                 :class="['w-full bg-black/50 border rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none placeholder-neutral-600 transition-all font-mono', baseUrlError ? 'border-red-500/50 focus:ring-red-500' : 'border-neutral-700']"
-                placeholder="可选：自定义 GLM 接口 Base URL"
+                placeholder="可选：自定义 DeepSeek 接口 Base URL"
                 />
                 <p v-if="baseUrlError" class="text-xs text-red-400 font-bold">{{ baseUrlError }}</p>
                 <p v-else class="text-xs text-neutral-500">
@@ -1477,15 +1483,15 @@ onMounted(() => {
                     Model
                 </label>
                 <input
-                v-model="glmModel"
+                v-model="deepseekModel"
                 type="text"
                 autocomplete="off"
                 spellcheck="false"
                 class="w-full bg-black/50 border border-neutral-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none placeholder-neutral-600 transition-all font-mono"
-                placeholder="glm-4.6v-flash"
+                placeholder="deepseek-chat"
                 />
                 <p class="text-xs text-neutral-500">
-                    指定使用的模型名称（默认为 glm-4.6v-flash）。如果不填写，将使用默认值。
+                    指定使用的模型名称（默认为 deepseek-chat）。如果不填写，将使用默认值。
                 </p>
             </div>
 

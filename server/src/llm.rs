@@ -3,22 +3,19 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use url::Url;
 
-const API_URL: &str = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
-const DEFAULT_MODEL: &str = "glm-4.6v-flash";
-
 pub const DEEPSEEK_API_URL: &str = "https://api.deepseek.com/chat/completions";
 pub const DEEPSEEK_DEFAULT_MODEL: &str = "deepseek-chat";
 
-pub const GLM_LIMIT_FRIENDLY_MESSAGE: &str =
-    "GLM 已达最大调用频率, 请填写自己的 API Key 并再次尝试";
+pub const LLM_LIMIT_FRIENDLY_MESSAGE: &str =
+    "LLM 已达最大调用频率, 请填写自己的 API Key 并再次尝试";
 
-/// Error code 1305 from GLM API: "当前API请求过多，请稍后重试。"
+/// Error code 1305 from LLM API: "当前API请求过多，请稍后重试。"
 /// This indicates rate limiting, user should use their own API key.
-pub const GLM_RATE_LIMIT_CODE: &str = "1305";
+pub const LLM_RATE_LIMIT_CODE: &str = "1305";
 
-/// Parses GLM error response to extract error code
+/// Parses LLM error response to extract error code
 /// Returns Some(code) if the response contains an error code, None otherwise
-pub fn extract_glm_error_code(text: &str) -> Option<String> {
+pub fn extract_llm_error_code(text: &str) -> Option<String> {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
         if let Some(error_obj) = value.get("error") {
             if let Some(code) = error_obj.get("code") {
@@ -42,13 +39,7 @@ pub fn contains_limit(text: &str) -> bool {
 }
 
 pub fn is_rate_limit_error(text: &str) -> bool {
-    extract_glm_error_code(text).as_deref() == Some(GLM_RATE_LIMIT_CODE)
-}
-
-fn glm_api_key() -> Result<String, String> {
-    std::env::var("GLM_API_KEY")
-        .or_else(|_| std::env::var("BIGMODEL_API_KEY"))
-        .map_err(|_| "Missing GLM_API_KEY".to_string())
+    extract_llm_error_code(text).as_deref() == Some(LLM_RATE_LIMIT_CODE)
 }
 
 pub fn deepseek_api_key() -> Result<String, String> {
@@ -56,21 +47,21 @@ pub fn deepseek_api_key() -> Result<String, String> {
         .map_err(|_| "Missing DEEPSEEK_API_KEY".to_string())
 }
 
-fn resolve_glm_api_key(override_key: Option<String>) -> Result<String, String> {
+fn resolve_llm_api_key(override_key: Option<String>) -> Result<String, String> {
     let from_req = override_key.unwrap_or_default().trim().to_string();
 
     if !from_req.is_empty() {
         return Ok(from_req);
     }
 
-    glm_api_key()
+    deepseek_api_key()
 }
 
-fn resolve_glm_endpoint(base_url: Option<String>) -> Result<String, String> {
+fn resolve_llm_endpoint(base_url: Option<String>) -> Result<String, String> {
     let raw = base_url.unwrap_or_default();
     let raw = raw.trim();
     if raw.is_empty() {
-        return Ok(API_URL.to_string());
+        return Ok(DEEPSEEK_API_URL.to_string());
     }
 
     if raw.contains("chat/completions") {
@@ -155,14 +146,14 @@ pub fn log_to_file(msg: &str) {
 }
 
 #[allow(dead_code)]
-pub async fn call_glm_with_api_key(
+pub async fn call_llm_with_api_key(
     prompt: String,
     json_mode: bool,
     api_key: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
 ) -> Result<String, String> {
-    println!("Init GLM Client with 300s timeout...");
+    println!("Init LLM Client with 300s timeout...");
     let client = Client::builder()
         .timeout(Duration::from_secs(300))
         .build()
@@ -170,11 +161,11 @@ pub async fn call_glm_with_api_key(
 
     let _using_override_key = api_key.as_ref().is_some_and(|k| !k.trim().is_empty());
 
-    let api_key = resolve_glm_api_key(api_key)?;
-    let endpoint = resolve_glm_endpoint(base_url)?;
-    let model = model.unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let api_key = resolve_llm_api_key(api_key)?;
+    let endpoint = resolve_llm_endpoint(base_url)?;
+    let model = model.unwrap_or_else(|| DEEPSEEK_DEFAULT_MODEL.to_string());
     
-    let log_start = format!("Sending request to GLM/DeepSeek...\n  -> Endpoint: {}\n  -> Model: {}\n  -> Prompt len: {}", endpoint, model, prompt.len());
+    let log_start = format!("Sending request to LLM/DeepSeek...\n  -> Endpoint: {}\n  -> Model: {}\n  -> Prompt len: {}", endpoint, model, prompt.len());
     println!("{}", log_start);
     log_to_file(&log_start);
     log_to_file(&format!("PROMPT:\n{}", prompt));
@@ -195,7 +186,7 @@ pub async fn call_glm_with_api_key(
                 content: prompt.clone(),
             },
         ],
-        max_tokens: 7890,
+        max_tokens: 4000,
         response_format: if json_mode {
             Some(ResponseFormat { r#type: "json_object".to_string() })
         } else {
@@ -216,25 +207,25 @@ pub async fn call_glm_with_api_key(
         .map_err(|e| format!("Request failed: {}", e))?;
 
     let duration = start.elapsed();
-    let log_duration = format!("GLM Request took: {:?}", duration);
+    let log_duration = format!("LLM Request took: {:?}", duration);
     println!("{}", log_duration);
     log_to_file(&log_duration);
 
     if !response.status().is_success() {
         let text = response.text().await.unwrap_or_default();
-        let log_err = format!("GLM Error Body: {}", text);
+        let log_err = format!("LLM Error Body: {}", text);
         println!("{}", log_err);
         log_to_file(&log_err);
 
         if is_rate_limit_error(&text) {
             return Err(format!(
-                "GLM API 返回错误码 {}: {}",
-                GLM_RATE_LIMIT_CODE, text
+                "LLM API 返回错误码 {}: {}",
+                LLM_RATE_LIMIT_CODE, text
             ));
         }
 
         if contains_limit(&text) {
-            return Err(GLM_LIMIT_FRIENDLY_MESSAGE.to_string());
+            return Err(LLM_LIMIT_FRIENDLY_MESSAGE.to_string());
         }
 
         return Err(text);
@@ -248,18 +239,18 @@ pub async fn call_glm_with_api_key(
     log_to_file(&format!("RAW RESPONSE:\n{}", text_response));
 
     // Try to parse as generic JSON first to check for "error" field
-    // (GLM sometimes returns 200 OK with "error" in body)
+    // (LLM sometimes returns 200 OK with "error" in body)
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text_response) {
         if json_value.get("error").is_some() {
-            let log_logic_err = format!("GLM returned 200 OK but with error body: {}", text_response);
+            let log_logic_err = format!("LLM returned 200 OK but with error body: {}", text_response);
             println!("{}", log_logic_err);
             log_to_file(&log_logic_err);
 
             // Check for rate limit in this body
             if is_rate_limit_error(&text_response) {
                 return Err(format!(
-                    "GLM API 返回错误码 {}: {}",
-                    GLM_RATE_LIMIT_CODE, text_response
+                    "LLM API 返回错误码 {}: {}",
+                    LLM_RATE_LIMIT_CODE, text_response
                 ));
             }
 
@@ -276,7 +267,7 @@ pub async fn call_glm_with_api_key(
 
     if let Some(choice) = chat_response.choices.first() {
         println!(
-            "GLM Response Content Length: {}",
+            "LLM Response Content Length: {}",
             choice.message.content.len()
         );
         Ok(choice.message.content.clone())

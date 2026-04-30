@@ -72,21 +72,21 @@ const isOwner = ref(true);
 const sharedRecordId = ref<string | null>(null);
 const sharedAt = ref<string | null>(null);
 
-/** GLM 的默认请求地址（用于判定“是否被修改”） */
-const DEFAULT_GLM_BASE_URL =
-  'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-/** GLM 的默认模型（用于判定“是否被修改”） */
-const DEFAULT_GLM_MODEL = 'glm-4.6v-flash';
+/** DeepSeek 的默认请求地址（用于判定“是否被修改”） */
+const DEFAULT_DEEPSEEK_BASE_URL =
+  'https://api.deepseek.com/chat/completions';
+/** DeepSeek 的默认模型（用于判定“是否被修改”） */
+const DEFAULT_DEEPSEEK_MODEL = 'deepseek-chat';
 
-const glmBaseUrl = useStorage('mg_glm_base_url', DEFAULT_GLM_BASE_URL);
-const glmModel = useStorage('mg_glm_model', DEFAULT_GLM_MODEL);
+const deepseekBaseUrl = useStorage('mg_deepseek_base_url', DEFAULT_DEEPSEEK_BASE_URL);
+const deepseekModel = useStorage('mg_deepseek_model', DEFAULT_DEEPSEEK_MODEL);
 
 /**
  * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。
  */
 const securityLocked = computed(() => {
-  const baseUrlTouched = glmBaseUrl.value.trim() !== DEFAULT_GLM_BASE_URL;
-  const modelTouched = glmModel.value.trim() !== DEFAULT_GLM_MODEL;
+  const baseUrlTouched = deepseekBaseUrl.value.trim() !== DEFAULT_DEEPSEEK_BASE_URL;
+  const modelTouched = deepseekModel.value.trim() !== DEFAULT_DEEPSEEK_MODEL;
   return baseUrlTouched || modelTouched;
 });
 

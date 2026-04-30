@@ -35,6 +35,7 @@ export interface GenerateRequest {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
+
 }
 
 // 统一 API 响应格式

@@ -101,6 +101,7 @@ onMounted(async () => {
       apiKey: params.apiKey,
       baseUrl: params.baseUrl,
       model: params.model,
+
     };
 
     // Clear the stored params after reading

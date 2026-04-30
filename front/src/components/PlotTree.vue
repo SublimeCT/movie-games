@@ -123,11 +123,11 @@ const treeGraph = computed(() => {
   }
 
   const byDepth = new Map<number, string[]>();
-  for (const id of visited) {
+  visited.forEach(id => {
     const d = depth.get(id) ?? 0;
     if (!byDepth.has(d)) byDepth.set(d, []);
     byDepth.get(d)?.push(id);
-  }
+  });
 
   const maxDepth = Math.max(0, ...Array.from(byDepth.keys()));
 
@@ -213,7 +213,7 @@ const treeGraph = computed(() => {
   }
 
   const nodeVMs: TreeNodeVM[] = [];
-  for (const id of visited) {
+  visited.forEach(id => {
     const p = pos.get(id) ?? { x: padX, y: padY };
     const isEnding = knownEndingKeys.has(id);
     nodeVMs.push({
@@ -226,7 +226,7 @@ const treeGraph = computed(() => {
       w: cardW,
       h: cardH,
     });
-  }
+  });
 
   return {
     nodes: nodeVMs,

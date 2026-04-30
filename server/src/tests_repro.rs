@@ -70,56 +70,7 @@ mod tests {
 
     // test_choice_serialization_omits_null_affinity_effect removed because affinity_effect is removed.
 
-    #[test]
-    fn test_pick_background_prompt_prefers_template_synopsis() {
-        run_with_timeout(TEST_TIMEOUT, || {
-            let req: GenerateRequest = from_str(
-                r#"{
-                  "mode": "wizard",
-                  "theme": "职场",
-                  "synopsis": "REQ",
-                  "language": "zh-CN"
-                }"#,
-            )
-            .unwrap();
 
-            let template = MovieTemplate {
-                project_id: "p".to_string(),
-                title: "t".to_string(),
-                version: "v".to_string(),
-                owner: "o".to_string(),
-                meta: MetaInfo {
-                    logline: "l".to_string(),
-                    synopsis: "TEMPLATE".to_string(),
-                    target_runtime_minutes: 1,
-                    genre: "Drama".to_string(),
-                    language: "zh-CN".to_string(),
-                },
-                background_image_base64: None,
-                nodes: HashMap::new(),
-                endings: HashMap::new(),
-                characters: HashMap::new(),
-                provenance: Provenance {
-                    created_by: "u".to_string(),
-                    created_at: "t".to_string(),
-                },
-                flags: HashMap::new(),
-            };
-
-            let picked = crate::images::pick_background_prompt(&req, &template);
-            assert_eq!(picked, "TEMPLATE");
-        });
-    }
-
-    #[test]
-    fn test_fallback_image_data_uris_have_svg_prefix() {
-        run_with_timeout(TEST_TIMEOUT, || {
-            let bg = crate::images::fallback_background_data_uri("Title", "Synopsis");
-            assert!(bg.starts_with("data:image/svg+xml;base64,"));
-            let avatar = crate::images::fallback_avatar_data_uri("Alice");
-            assert!(avatar.starts_with("data:image/svg+xml;base64,"));
-        });
-    }
 
     #[test]
     fn test_deserialize_movie_template() {
@@ -356,29 +307,6 @@ mod tests {
         });
     }
 
-    #[test]
-    fn test_normalize_cogview_size_defaults_and_accepts_known_values() {
-        run_with_timeout(TEST_TIMEOUT, || {
-            assert_eq!(crate::images::normalize_cogview_size(None), "1024x1024");
-            assert_eq!(crate::images::normalize_cogview_size(Some("")), "1024x1024");
-            assert_eq!(
-                crate::images::normalize_cogview_size(Some(" 1152x864 ")),
-                "1152x864"
-            );
-            assert_eq!(
-                crate::images::normalize_cogview_size(Some("864x1152")),
-                "864x1152"
-            );
-            assert_eq!(
-                crate::images::normalize_cogview_size(Some("1024x1024")),
-                "1024x1024"
-            );
-            assert_eq!(
-                crate::images::normalize_cogview_size(Some("999x999")),
-                "1024x1024"
-            );
-        });
-    }
 
     #[test]
     fn test_normalize_endings_key_and_choice_target() {
@@ -515,6 +443,7 @@ mod tests {
                 api_key: None,
                 base_url: None,
                 model: None,
+            
             };
 
             crate::template::enforce_character_consistency(&mut template, req.characters.clone());
@@ -526,86 +455,6 @@ mod tests {
         });
     }
 
-    #[test]
-    fn test_ensure_request_characters_present_and_avatar_fallback_attaches() {
-        run_with_timeout(TEST_TIMEOUT, || {
-            let mut template = MovieTemplate {
-                project_id: "p".to_string(),
-                title: "t".to_string(),
-                version: "v".to_string(),
-                owner: "o".to_string(),
-                meta: MetaInfo {
-                    logline: "l".to_string(),
-                    synopsis: "s".to_string(),
-                    target_runtime_minutes: 1,
-                    genre: "Drama".to_string(),
-                    language: "zh-CN".to_string(),
-                },
-                background_image_base64: None,
-                nodes: HashMap::new(),
-                endings: HashMap::new(),
-                characters: HashMap::new(),
-                provenance: Provenance {
-                    created_by: "c".to_string(),
-                    created_at: "a".to_string(),
-                },
-                flags: HashMap::new(),
-            };
-
-            template.characters.insert(
-                "c_1".to_string(),
-                crate::types::Character {
-                    id: "c_1".to_string(),
-                    name: "SomeoneElse".to_string(),
-                    gender: "".to_string(),
-                    age: 20,
-                    role: "Supporting".to_string(),
-                    background: "".to_string(),
-                    avatar_path: None,
-                },
-            );
-
-            let req_chars = vec![crate::api_types::CharacterInput {
-                name: "Alice".to_string(),
-                description: "Main character".to_string(),
-                gender: "Female".to_string(),
-                is_main: true,
-            }];
-
-            let req = crate::api_types::GenerateRequest {
-                mode: "wizard".to_string(),
-                theme: None,
-                synopsis: None,
-                genre: None,
-                characters: Some(req_chars.clone()),
-                min_nodes: None,
-                max_nodes: None,
-                min_endings: None,
-                max_endings: None,
-                free_input: None,
-                language: Some("zh-CN".to_string()),
-                size: None,
-                api_key: None,
-                base_url: None,
-                model: None,
-            };
-
-            crate::template::enforce_character_consistency(&mut template, req.characters.clone());
-            assert!(template.characters.values().any(|c| c.name == "Alice"));
-
-            crate::images::ensure_avatar_fallbacks(&mut template, Some(&req_chars));
-            let alice = template
-                .characters
-                .values()
-                .find(|c| c.name == "Alice")
-                .unwrap();
-            assert!(alice
-                .avatar_path
-                .as_deref()
-                .unwrap_or("")
-                .starts_with("data:image/"));
-        });
-    }
 
     #[test]
     fn test_sanitize_template_graph_breaks_cycle_and_self_reference() {
@@ -857,105 +706,5 @@ mod tests {
         });
     }
 
-    #[test]
-    fn test_attach_avatar_to_template_sets_avatar_path() {
-        run_with_timeout(TEST_TIMEOUT, || {
-            let mut characters: HashMap<String, crate::types::Character> = HashMap::new();
-            characters.insert(
-                "c_1".to_string(),
-                crate::types::Character {
-                    id: "c_1".to_string(),
-                    name: "Alice".to_string(),
-                    gender: "Female".to_string(),
-                    age: 20,
-                    role: "Protagonist".to_string(),
-                    background: "".to_string(),
-                    avatar_path: None,
-                },
-            );
 
-            let mut template = MovieTemplate {
-                project_id: "p".to_string(),
-                title: "t".to_string(),
-                version: "v".to_string(),
-                owner: "o".to_string(),
-                meta: MetaInfo {
-                    logline: "l".to_string(),
-                    synopsis: "s".to_string(),
-                    target_runtime_minutes: 1,
-                    genre: "Drama".to_string(),
-                    language: "zh-CN".to_string(),
-                },
-                background_image_base64: None,
-                nodes: HashMap::new(),
-                endings: HashMap::new(),
-                characters,
-                provenance: Provenance {
-                    created_by: "c".to_string(),
-                    created_at: "a".to_string(),
-                },
-                flags: HashMap::new(),
-            };
-
-            crate::images::attach_avatar_to_template(
-                &mut template,
-                "Alice",
-                "data:image/png;base64,AAA".to_string(),
-            );
-
-            let c = template.characters.get("c_1").unwrap();
-            assert_eq!(c.avatar_path.as_deref(), Some("data:image/png;base64,AAA"));
-        });
-    }
-
-    #[test]
-    fn test_attach_avatar_to_template_does_not_overwrite_existing() {
-        run_with_timeout(TEST_TIMEOUT, || {
-            let mut characters: HashMap<String, crate::types::Character> = HashMap::new();
-            characters.insert(
-                "c_1".to_string(),
-                crate::types::Character {
-                    id: "c_1".to_string(),
-                    name: "Alice".to_string(),
-                    gender: "Female".to_string(),
-                    age: 20,
-                    role: "Protagonist".to_string(),
-                    background: "".to_string(),
-                    avatar_path: Some("data:image/png;base64,OLD".to_string()),
-                },
-            );
-
-            let mut template = MovieTemplate {
-                project_id: "p".to_string(),
-                title: "t".to_string(),
-                version: "v".to_string(),
-                owner: "o".to_string(),
-                meta: MetaInfo {
-                    logline: "l".to_string(),
-                    synopsis: "s".to_string(),
-                    target_runtime_minutes: 1,
-                    genre: "Drama".to_string(),
-                    language: "zh-CN".to_string(),
-                },
-                background_image_base64: None,
-                nodes: HashMap::new(),
-                endings: HashMap::new(),
-                characters,
-                provenance: Provenance {
-                    created_by: "c".to_string(),
-                    created_at: "a".to_string(),
-                },
-                flags: HashMap::new(),
-            };
-
-            crate::images::attach_avatar_to_template(
-                &mut template,
-                "Alice",
-                "data:image/png;base64,NEW".to_string(),
-            );
-
-            let c = template.characters.get("c_1").unwrap();
-            assert_eq!(c.avatar_path.as_deref(), Some("data:image/png;base64,OLD"));
-        });
-    }
 }

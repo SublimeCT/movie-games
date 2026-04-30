@@ -29,13 +29,14 @@ pub(crate) struct RecordsListRequest {
     pub(crate) ids: Vec<Uuid>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateTemplateRequest {
     pub(crate) id: Uuid,
     pub(crate) template: MovieTemplate,
     #[serde(default)]
     pub(crate) source: Option<String>,
+
 }
 
 #[derive(Deserialize, Serialize)]
@@ -58,6 +59,7 @@ pub(crate) struct ImportTemplateRequest {
     pub(crate) characters: Option<Vec<CharacterInput>>,
     #[serde(default)]
     pub(crate) language: Option<String>,
+
 }
 
 #[derive(Deserialize, Debug, Serialize, Clone)]
@@ -86,6 +88,7 @@ pub(crate) struct GenerateRequest {
     pub(crate) base_url: Option<String>,
     #[serde(default)]
     pub(crate) model: Option<String>,
+
 }
 
 #[derive(Deserialize, Debug, Serialize, Clone)]

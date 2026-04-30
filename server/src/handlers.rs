@@ -17,18 +17,16 @@ use crate::api_types::{
     ImportTemplateRequest, RecordsListRequest, ShareRequest, UpdateTemplateRequest,
 };
 use crate::db::{
-    begin_glm_request_log, create_imported_request, delete_game_by_request_id,
-    finish_glm_request_log, get_request_owner,
+    begin_llm_request_log, create_imported_request, delete_game_by_request_id,
+    finish_llm_request_log, get_request_owner,
     get_shared_record_meta_by_request_id, record_visit,
     save_processed_response, set_request_template_source, set_share_status, upsert_shared_record,
     AppState, DbError,
 };
-use crate::glm;
+use crate::llm;
 use crate::ldag;
 use crate::types::{BluePrint, BluePrintAct, LDAGNode, Story};
-use crate::images::{
-    ensure_avatar_fallbacks,
-};
+
 use crate::prompt::{
     clean_json, construct_blueprint_prompt, construct_expand_character_prompt,
     construct_expand_worldview_prompt, construct_fill_node_content_prompt,
@@ -268,24 +266,26 @@ fn is_owner_ip(owner_ip: &str, request_ip: &str) -> bool {
         || (owner_ip == "::1" && request_ip == "127.0.0.1")
 }
 
-fn glm_api_key() -> Result<String, StatusCode> {
-    std::env::var("GLM_API_KEY")
-        .or_else(|_| std::env::var("BIGMODEL_API_KEY"))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-fn resolve_glm_api_key(override_key: Option<&str>) -> Result<String, StatusCode> {
+fn resolve_llm_api_key(override_key: Option<&str>) -> Result<String, StatusCode> {
     let from_req = override_key.unwrap_or("").trim();
     if !from_req.is_empty() {
         return Ok(from_req.to_string());
     }
-    glm_api_key()
+    std::env::var("DEEPSEEK_API_KEY").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-fn resolve_glm_endpoint(base_url: Option<&str>) -> Result<String, StatusCode> {
+fn resolve_llm_model(override_model: Option<&str>) -> String {
+    let from_req = override_model.unwrap_or("").trim();
+    if !from_req.is_empty() {
+        return from_req.to_string();
+    }
+    crate::llm::DEEPSEEK_DEFAULT_MODEL.to_string()
+}
+
+fn resolve_llm_endpoint(base_url: Option<&str>) -> Result<String, StatusCode> {
     let raw = base_url.unwrap_or("").trim();
     if raw.is_empty() {
-        return Ok("https://open.bigmodel.cn/api/paas/v4/chat/completions".to_string());
+        return Ok(crate::llm::DEEPSEEK_API_URL.to_string());
     }
 
     if raw.contains("chat/completions") {
@@ -418,7 +418,7 @@ pub(crate) async fn import_template(
     sanitize_template_graph(&mut template);
     normalize_template_nodes(&mut template);
 
-    ensure_avatar_fallbacks(&mut template, payload.characters.as_ref());
+
 
     let mut processed_response = serde_json::to_value(&template).unwrap_or(json!({}));
     processed_response = sanitize_json_value(&state.sensitive, processed_response);
@@ -565,7 +565,7 @@ pub(crate) async fn update_template(
     sanitize_template_graph(&mut template);
     normalize_template_nodes(&mut template);
 
-    ensure_avatar_fallbacks(&mut template, None);
+
 
     let mut template_value = serde_json::to_value(&template).unwrap_or(json!({}));
     template_value = sanitize_json_value(&state.sensitive, template_value);
@@ -810,7 +810,7 @@ pub(crate) async fn generate(
     state.sensitive.sanitize_json(&mut payload_json);
     let prompt_for_log = sanitize_text(&state.sensitive, &blueprint_prompt);
     
-    let request_id = begin_glm_request_log(
+    let request_id = begin_llm_request_log(
         &state.db,
         &client_ip,
         user_agent,
@@ -829,29 +829,24 @@ pub(crate) async fn generate(
     let handle = tokio::spawn(async move {
         let start = std::time::Instant::now();
         
-        // Helper to call GLM
-        let call_glm = |prompt: String, json_mode: bool| {
+        // Helper to call LLM
+        let call_llm = |prompt: String, json_mode: bool| {
             let payload_for_future = payload_clone.clone();
             async move {
                 let base_url = payload_for_future
                     .base_url
                     .as_deref()
                     .filter(|s| !s.is_empty())
-                    .unwrap_or(crate::glm::DEEPSEEK_API_URL);
+                    .unwrap_or("");
 
-                let model = payload_for_future
-                    .model
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(crate::glm::DEEPSEEK_DEFAULT_MODEL);
+                let model = resolve_llm_model(payload_for_future.model.as_deref());
 
                 let api_key = payload_for_future
                     .api_key
                     .clone()
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| crate::glm::deepseek_api_key().ok());
+                    .filter(|s| !s.is_empty());
 
-                crate::glm::call_glm_with_api_key(
+                crate::llm::call_llm_with_api_key(
                     prompt,
                     json_mode,
                     api_key,
@@ -864,10 +859,10 @@ pub(crate) async fn generate(
 
         // 2.1 Call LLM for BluePrint
         println!("Generating BluePrint...");
-        let blueprint_resp = match call_glm(blueprint_prompt, true).await {
+        let blueprint_resp = match call_llm(blueprint_prompt, true).await {
             Ok(s) => s,
             Err(e) => {
-                finish_glm_request_log(&db, request_id, "failed", None, Some(&e), None).await;
+                finish_llm_request_log(&db, request_id, "failed", None, Some(&e), None).await;
                 return Err(error_response(CODE_INTERNAL_ERROR, format!("BluePrint Gen Failed: {}", e)).into_response());
             }
         };
@@ -875,7 +870,7 @@ pub(crate) async fn generate(
         let mut blueprint: BluePrint = match serde_json::from_str(&clean_json(&blueprint_resp)) {
             Ok(v) => v,
             Err(e) => {
-                finish_glm_request_log(&db, request_id, "failed", Some(&blueprint_resp), Some(&format!("BluePrint Parse Error: {}", e)), None).await;
+                finish_llm_request_log(&db, request_id, "failed", Some(&blueprint_resp), Some(&format!("BluePrint Parse Error: {}", e)), None).await;
                 return Err(error_response(CODE_INTERNAL_ERROR, format!("BluePrint Parse Error: {}", e)).into_response());
             }
         };
@@ -886,7 +881,7 @@ pub(crate) async fn generate(
         let ldag_acts_structure = match ldag::generate_ldag(&blueprint) {
             Ok(v) => v,
             Err(e) => {
-                finish_glm_request_log(&db, request_id, "failed", None, Some(&e), None).await;
+                finish_llm_request_log(&db, request_id, "failed", None, Some(&e), None).await;
                 return Err(error_response(CODE_INTERNAL_ERROR, format!("LDAG Gen Failed: {}", e)).into_response());
             }
         };
@@ -894,7 +889,7 @@ pub(crate) async fn generate(
         // Step 4: Fill Content (Concurrent)
         let msg = format!("Filling content for {} acts...", ldag_acts_structure.len());
         println!("{}", msg);
-        crate::glm::log_to_file(&msg);
+        crate::llm::log_to_file(&msg);
         let mut filled_acts_futures = Vec::new();
         
         for (idx, act_nodes_structure) in ldag_acts_structure.iter().enumerate() {
@@ -909,31 +904,26 @@ pub(crate) async fn generate(
             
             // Spawn task for this act
             // We need to clone the closure or define logic here?
-            // Closure `call_glm` captures variables, can't be easily cloned if it captures `payload_clone`.
+            // Closure `call_llm` captures variables, can't be easily cloned if it captures `payload_clone`.
             // We'll just replicate logic or use Arc.
             // Simplified: just call the function directly.
             
             let base_url = Some(payload_clone.base_url
                 .as_deref()
                 .filter(|s| !s.is_empty())
-                .unwrap_or(crate::glm::DEEPSEEK_API_URL)
+                .unwrap_or("")
                 .to_string());
 
-            let model = Some(payload_clone.model
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .unwrap_or(crate::glm::DEEPSEEK_DEFAULT_MODEL)
-                .to_string());
+            let model = Some(resolve_llm_model(payload_clone.model.as_deref()));
 
             let api_key = payload_clone.api_key
                 .clone()
-                .filter(|s| !s.is_empty())
-                .or_else(|| crate::glm::deepseek_api_key().ok());
+                .filter(|s| !s.is_empty());
             
             filled_acts_futures.push(tokio::spawn(async move {
                 let prompt = construct_fill_node_content_prompt(&payload_ref, &act_info, &nodes_structure);
                 
-                let resp = crate::glm::call_glm_with_api_key(
+                let resp = crate::llm::call_llm_with_api_key(
                     prompt,
                     true,
                     api_key,
@@ -958,26 +948,26 @@ pub(crate) async fn generate(
         for (i, f) in filled_acts_futures.into_iter().enumerate() {
             let msg = format!("Waiting for Act {} content...", i + 1);
             println!("{}", msg);
-            crate::glm::log_to_file(&msg);
+            crate::llm::log_to_file(&msg);
             match f.await {
                 Ok(Ok(nodes)) => {
                     let msg = format!("Act {} filled successfully. Nodes count: {}", i + 1, nodes.len());
                     println!("{}", msg);
-                    crate::glm::log_to_file(&msg);
+                    crate::llm::log_to_file(&msg);
                     filled_act_list.push(nodes)
                 },
                 Ok(Err(e)) => {
                     let msg = format!("Act {} failed with logic error: {}", i + 1, e);
                     println!("{}", msg);
-                    crate::glm::log_to_file(&msg);
-                    finish_glm_request_log(&db, request_id, "failed", None, Some(&e), None).await;
+                    crate::llm::log_to_file(&msg);
+                    finish_llm_request_log(&db, request_id, "failed", None, Some(&e), None).await;
                     return Err(error_response(CODE_INTERNAL_ERROR, format!("Content Fill Failed: {}", e)).into_response());
                 }
                 Err(e) => {
                     let msg = format!("Act {} failed with task join error: {}", i + 1, e);
                     println!("{}", msg);
-                    crate::glm::log_to_file(&msg);
-                    finish_glm_request_log(&db, request_id, "failed", None, Some(&format!("Task Join Error: {}", e)), None).await;
+                    crate::llm::log_to_file(&msg);
+                    finish_llm_request_log(&db, request_id, "failed", None, Some(&format!("Task Join Error: {}", e)), None).await;
                     return Err(error_response(CODE_INTERNAL_ERROR, "Task Join Error").into_response());
                 }
             }
@@ -1031,6 +1021,7 @@ pub(crate) async fn generate(
         if let Some(chars) = &payload_clone.characters {
             for c in chars {
                 let id = c.name.clone(); // Use name as ID for now
+                let avatar_path = None;
                 characters_map.insert(id.clone(), crate::types::Character {
                     id,
                     name: c.name.clone(),
@@ -1038,7 +1029,7 @@ pub(crate) async fn generate(
                     age: 0,
                     role: c.description.clone(),
                     background: "".to_string(),
-                    avatar_path: None,
+                    avatar_path,
                 });
             }
         }
@@ -1070,7 +1061,7 @@ pub(crate) async fn generate(
         println!("Story saved successfully.");
         
         let duration = start.elapsed();
-        finish_glm_request_log(
+        finish_llm_request_log(
             &db,
             request_id,
             "success",
@@ -1145,7 +1136,7 @@ pub(crate) async fn expand_worldview(
         .build()
         .map_err(|e| error_response(CODE_INTERNAL_ERROR, e.to_string()).into_response())?;
 
-    let request_id = begin_glm_request_log(
+    let request_id = begin_llm_request_log(
         &state.db,
         &client_ip,
         user_agent,
@@ -1167,13 +1158,13 @@ pub(crate) async fn expand_worldview(
             .base_url
             .as_deref()
             .filter(|s| !s.is_empty())
-            .unwrap_or(crate::glm::DEEPSEEK_API_URL);
+            .unwrap_or("");
 
-        let endpoint = match resolve_glm_endpoint(Some(base_url)) {
+        let endpoint = match resolve_llm_endpoint(Some(base_url)) {
             Ok(v) => v,
             Err(_) => {
                 let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "failed",
@@ -1190,16 +1181,15 @@ pub(crate) async fn expand_worldview(
             .api_key
             .as_deref()
             .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .or_else(|| crate::glm::deepseek_api_key().ok());
+            .map(|s| s.to_string());
 
         let api_key = match api_key_candidate {
             Some(v) => v,
-            None => match resolve_glm_api_key(None) {
+            None => match resolve_llm_api_key(None) {
                 Ok(v) => v,
                 Err(_) => {
                     let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-                    finish_glm_request_log(
+                    finish_llm_request_log(
                         &db,
                         request_id,
                         "failed",
@@ -1215,11 +1205,7 @@ pub(crate) async fn expand_worldview(
             },
         };
 
-        let model = req_clone
-            .model
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .unwrap_or(crate::glm::DEEPSEEK_DEFAULT_MODEL);
+        let model = resolve_llm_model(req_clone.model.as_deref());
 
         let messages = vec![
             json!({
@@ -1251,18 +1237,18 @@ pub(crate) async fn expand_worldview(
         {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("GLM Request failed: {}", e);
+                eprintln!("LLM Request failed: {}", e);
                 let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "failed",
                     None,
-                    Some("GLM Request failed"),
+                    Some("LLM Request failed"),
                     Some(response_time_ms),
                 )
                 .await;
-                return Err(error_response(CODE_INTERNAL_ERROR, "GLM Request failed").into_response());
+                return Err(error_response(CODE_INTERNAL_ERROR, "LLM Request failed").into_response());
             }
         };
 
@@ -1272,16 +1258,16 @@ pub(crate) async fn expand_worldview(
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
             let error_text_s = sanitize_text(&sensitive, &error_text);
-            eprintln!("GLM Error: {}", error_text_s);
+            eprintln!("LLM Error: {}", error_text_s);
 
-            if glm::is_rate_limit_error(&error_text) {
-                let error_message = if let Some(code) = glm::extract_glm_error_code(&error_text) {
-                    format!("GLM API 返回错误码 {}: {}", code, error_text_s)
+            if llm::is_rate_limit_error(&error_text) {
+                let error_message = if let Some(code) = llm::extract_llm_error_code(&error_text) {
+                    format!("LLM API 返回错误码 {}: {}", code, error_text_s)
                 } else {
                     error_text_s.clone()
                 };
 
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "error",
@@ -1293,8 +1279,8 @@ pub(crate) async fn expand_worldview(
                 return Err(rate_limit_response(error_message).into_response());
             }
 
-            if glm::contains_limit(&error_text) {
-                finish_glm_request_log(
+            if llm::contains_limit(&error_text) {
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "error",
@@ -1306,7 +1292,7 @@ pub(crate) async fn expand_worldview(
                 return Err(rate_limit_response(&error_text_s).into_response());
             }
 
-            finish_glm_request_log(
+            finish_llm_request_log(
                 &db,
                 request_id,
                 "error",
@@ -1323,7 +1309,7 @@ pub(crate) async fn expand_worldview(
             Ok(t) => t,
             Err(e) => {
                 let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "failed",
@@ -1345,20 +1331,20 @@ pub(crate) async fn expand_worldview(
             if json_value.get("error").is_some() {
                 let text_response_s = sanitize_text(&sensitive, &text_response);
                 println!(
-                    "GLM returned 200 OK but with error body: {}",
+                    "LLM returned 200 OK but with error body: {}",
                     text_response_s
                 );
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "failed",
                     Some(&text_response_s),
-                    Some("GLM Logic Error"),
+                    Some("LLM Logic Error"),
                     Some(response_time_ms),
                 )
                 .await;
                 return Err(
-                    error_response(CODE_INTERNAL_ERROR, "GLM Logic Error").into_response()
+                    error_response(CODE_INTERNAL_ERROR, "LLM Logic Error").into_response()
                 );
             }
         }
@@ -1368,17 +1354,17 @@ pub(crate) async fn expand_worldview(
             Ok(v) => v,
             Err(e) => {
                 let text_response_s = sanitize_text(&sensitive, &text_response);
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "failed",
                     Some(&text_response_s),
-                    Some(&format!("Failed to parse GLM response JSON: {}", e)),
+                    Some(&format!("Failed to parse LLM response JSON: {}", e)),
                     Some(response_time_ms),
                 )
                 .await;
                 return Err(
-                    error_response(CODE_INTERNAL_ERROR, "Failed to parse GLM response").into_response(),
+                    error_response(CODE_INTERNAL_ERROR, "Failed to parse LLM response").into_response(),
                 );
             }
         };
@@ -1386,24 +1372,24 @@ pub(crate) async fn expand_worldview(
         let content = match response_json["choices"][0]["message"]["content"].as_str() {
             Some(c) => c.to_string(),
             None => {
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "failed",
                     None,
-                    Some("Invalid GLM response structure"),
+                    Some("Invalid LLM response structure"),
                     Some(response_time_ms),
                 )
                 .await;
                 return Err(
-                    error_response(CODE_INTERNAL_ERROR, "Invalid GLM response structure")
+                    error_response(CODE_INTERNAL_ERROR, "Invalid LLM response structure")
                         .into_response(),
                 );
             }
         };
 
         // Log raw content as per user demand
-        finish_glm_request_log(
+        finish_llm_request_log(
             &db,
             request_id,
             "success",
@@ -1544,7 +1530,7 @@ pub(crate) async fn expand_character(
     state.sensitive.sanitize_json(&mut payload_json);
     let prompt_for_log = sanitize_text(&state.sensitive, &prompt);
 
-    let request_id = begin_glm_request_log(
+    let request_id = begin_llm_request_log(
         &state.db,
         &client_ip,
         user_agent,
@@ -1566,13 +1552,13 @@ pub(crate) async fn expand_character(
             .base_url
             .as_deref()
             .filter(|s| !s.is_empty())
-            .unwrap_or(crate::glm::DEEPSEEK_API_URL);
+            .unwrap_or("");
 
-        let endpoint = match resolve_glm_endpoint(Some(base_url)) {
+        let endpoint = match resolve_llm_endpoint(Some(base_url)) {
             Ok(v) => v,
             Err(_) => {
                 let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "failed",
@@ -1589,16 +1575,15 @@ pub(crate) async fn expand_character(
             .api_key
             .as_deref()
             .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .or_else(|| crate::glm::deepseek_api_key().ok());
+            .map(|s| s.to_string());
 
         let api_key = match api_key_candidate {
             Some(v) => v,
-            None => match resolve_glm_api_key(None) {
+            None => match resolve_llm_api_key(None) {
                 Ok(v) => v,
                 Err(_) => {
                     let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-                    finish_glm_request_log(
+                    finish_llm_request_log(
                         &db,
                         request_id,
                         "failed",
@@ -1614,11 +1599,7 @@ pub(crate) async fn expand_character(
             },
         };
 
-        let model = req_clone
-            .model
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .unwrap_or(crate::glm::DEEPSEEK_DEFAULT_MODEL);
+        let model = resolve_llm_model(req_clone.model.as_deref());
 
         let messages = vec![
             json!({
@@ -1649,18 +1630,18 @@ pub(crate) async fn expand_character(
         {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("GLM Request failed: {}", e);
+                eprintln!("LLM Request failed: {}", e);
                 let response_time_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "failed",
                     None,
-                    Some("GLM Request failed"),
+                    Some("LLM Request failed"),
                     Some(response_time_ms),
                 )
                 .await;
-                return Err(error_response(CODE_INTERNAL_ERROR, "GLM Request failed").into_response());
+                return Err(error_response(CODE_INTERNAL_ERROR, "LLM Request failed").into_response());
             }
         };
 
@@ -1670,16 +1651,16 @@ pub(crate) async fn expand_character(
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
             let error_text_s = sanitize_text(&sensitive, &error_text);
-            eprintln!("GLM Error: {}", error_text_s);
+            eprintln!("LLM Error: {}", error_text_s);
 
-            if glm::is_rate_limit_error(&error_text) {
-                let error_message = if let Some(code) = glm::extract_glm_error_code(&error_text) {
-                    format!("GLM API 返回错误码 {}: {}", code, error_text_s)
+            if llm::is_rate_limit_error(&error_text) {
+                let error_message = if let Some(code) = llm::extract_llm_error_code(&error_text) {
+                    format!("LLM API 返回错误码 {}: {}", code, error_text_s)
                 } else {
                     error_text_s.clone()
                 };
 
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "error",
@@ -1691,8 +1672,8 @@ pub(crate) async fn expand_character(
                 return Err(rate_limit_response(error_message).into_response());
             }
 
-            if glm::contains_limit(&error_text) {
-                finish_glm_request_log(
+            if llm::contains_limit(&error_text) {
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "error",
@@ -1704,7 +1685,7 @@ pub(crate) async fn expand_character(
                 return Err(rate_limit_response(&error_text_s).into_response());
             }
 
-            finish_glm_request_log(
+            finish_llm_request_log(
                 &db,
                 request_id,
                 "error",
@@ -1720,7 +1701,7 @@ pub(crate) async fn expand_character(
             Ok(t) => t,
             Err(e) => {
                 let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "failed",
@@ -1738,19 +1719,19 @@ pub(crate) async fn expand_character(
         };
 
         if text_response.trim().is_empty() {
-            eprintln!("GLM returned empty response body");
+            eprintln!("LLM returned empty response body");
             let response_time_ms = duration.as_millis().min(i64::MAX as u128) as i64;
-            finish_glm_request_log(
+            finish_llm_request_log(
                 &db,
                 request_id,
                 "failed",
                 Some(""),
-                Some("GLM returned empty response body"),
+                Some("LLM returned empty response body"),
                 Some(response_time_ms),
             )
             .await;
             return Err(
-                error_response(CODE_INTERNAL_ERROR, "GLM returned empty response body").into_response(),
+                error_response(CODE_INTERNAL_ERROR, "LLM returned empty response body").into_response(),
             );
         }
 
@@ -1759,19 +1740,19 @@ pub(crate) async fn expand_character(
             if json_value.get("error").is_some() {
                 let text_response_s = sanitize_text(&sensitive, &text_response);
                 println!(
-                    "GLM returned 200 OK but with error body: {}",
+                    "LLM returned 200 OK but with error body: {}",
                     text_response_s
                 );
 
-                if glm::is_rate_limit_error(&text_response) {
-                    let error_message = if let Some(code) = glm::extract_glm_error_code(&text_response)
+                if llm::is_rate_limit_error(&text_response) {
+                    let error_message = if let Some(code) = llm::extract_llm_error_code(&text_response)
                     {
-                        format!("GLM API 返回错误码 {}: {}", code, text_response_s)
+                        format!("LLM API 返回错误码 {}: {}", code, text_response_s)
                     } else {
                         text_response_s.clone()
                     };
 
-                    finish_glm_request_log(
+                    finish_llm_request_log(
                         &db,
                         request_id,
                         "error",
@@ -1783,7 +1764,7 @@ pub(crate) async fn expand_character(
                     return Err(rate_limit_response(error_message).into_response());
                 }
 
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "error",
@@ -1801,17 +1782,17 @@ pub(crate) async fn expand_character(
             Ok(v) => v,
             Err(e) => {
                 let text_response_s = sanitize_text(&sensitive, &text_response);
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "failed",
                     Some(&text_response_s),
-                    Some(&format!("Failed to parse GLM response JSON: {}", e)),
+                    Some(&format!("Failed to parse LLM response JSON: {}", e)),
                     Some(response_time_ms),
                 )
                 .await;
                 return Err(
-                    error_response(CODE_INTERNAL_ERROR, "Failed to parse GLM response").into_response(),
+                    error_response(CODE_INTERNAL_ERROR, "Failed to parse LLM response").into_response(),
                 );
             }
         };
@@ -1819,17 +1800,17 @@ pub(crate) async fn expand_character(
         let content = match response_json["choices"][0]["message"]["content"].as_str() {
             Some(c) => c,
             None => {
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "failed",
                     None,
-                    Some("Invalid GLM response structure"),
+                    Some("Invalid LLM response structure"),
                     Some(response_time_ms),
                 )
                 .await;
                 return Err(
-                    error_response(CODE_INTERNAL_ERROR, "Invalid GLM response structure")
+                    error_response(CODE_INTERNAL_ERROR, "Invalid LLM response structure")
                         .into_response(),
                 );
             }
@@ -1842,7 +1823,7 @@ pub(crate) async fn expand_character(
                 // Log raw content as per user demand
                 let chars_log = chars_value.to_string();
 
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "success",
@@ -1856,7 +1837,7 @@ pub(crate) async fn expand_character(
             }
             Err(e) => {
                 let clean_s = sanitize_text(&sensitive, &clean);
-                finish_glm_request_log(
+                finish_llm_request_log(
                     &db,
                     request_id,
                     "failed",

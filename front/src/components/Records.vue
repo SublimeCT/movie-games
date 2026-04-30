@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useStorage } from '@vueuse/core';
+
 import {
   ArrowLeft,
   Copy,
@@ -12,28 +12,19 @@ import {
   Trash2,
   X,
 } from 'lucide-vue-next';
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   deleteGameTemplate,
-  listRecords,
-  type RecordsListItem,
   shareGame,
 } from '../api';
 import { db } from '../utils/db';
-import type { MovieTemplate } from '../types/movie';
+
 import { WavyBackground } from './ui/wavy-background';
 
 const router = useRouter();
 
-/** GLM 的默认请求地址（用于判定“是否被修改”） */
-const DEFAULT_GLM_BASE_URL =
-  'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-/** GLM 的默认模型（用于判定“是否被修改”） */
-const DEFAULT_GLM_MODEL = 'glm-4.6v-flash';
 
-const glmBaseUrl = useStorage('mg_glm_base_url', DEFAULT_GLM_BASE_URL);
-const glmModel = useStorage('mg_glm_model', DEFAULT_GLM_MODEL);
 
 /**
  * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。

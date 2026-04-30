@@ -13,11 +13,11 @@ import {
 } from 'lucide-vue-next';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import CharacterAvatar from './ui/CharacterAvatar.vue';
+
 import PlotTree from './PlotTree.vue';
 import { getSharedRecordMeta, shareGame } from '../api';
 import { useGameState } from '../hooks/useGameState';
-import type { Character, Ending, StoryNode } from '../types/movie';
+import type { Ending, StoryNode } from '../types/movie';
 import type { Story } from '../types/Story';
 import { buildNodeMap } from '../utils/story';
 
@@ -43,35 +43,9 @@ const nodesMap = computed(() => {
   return {};
 });
 
-const selectDefaultCharacter = (characters: Record<string, Character>) => {
-  const entries = Object.entries(characters);
-  if (entries.length === 0) return null;
 
-  const scored = entries
-    .map(([key, c]) => {
-      const name = (c.name || '').toLowerCase();
-      const role = (c.role || '').toLowerCase();
-      let score = 0;
 
-      if (/player|protagonist|main/.test(key.toLowerCase())) score += 5;
-      if (name.includes('主角') || name === '我') score += 6;
-      if (role.includes('主角') || role.includes('protagonist')) score += 3;
-      if (c.age && c.age > 0) score += 1;
 
-      return { score, c };
-    })
-    .sort((a, b) => b.score - a.score);
-
-  return scored[0]?.c ?? null;
-};
-
-const protagonistName = computed(() => {
-  const template = data.value;
-  const selected = template?.characters
-    ? selectDefaultCharacter(template.characters)
-    : null;
-  return String(selected?.name || '').trim();
-});
 
 const isShared = ref(false);
 const shareLoading = ref(false);

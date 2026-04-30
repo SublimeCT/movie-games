@@ -1,67 +1,10 @@
-import { ref, nextTick, onMounted, watch } from 'vue';
+import { ref, nextTick, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import type { Story } from '../types/Story';
 import type { Ending, MovieTemplate } from '../types/movie';
-import { db, type GameState } from '../utils/db';
+import { db } from '../utils/db';
 
-const readLocalJson = <T>(key: string, fallback: T): T => {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    const v = JSON.parse(raw) as unknown;
-    return v as T;
-  } catch {
-    return fallback;
-  }
-};
 
-const readLocalTheme = () =>
-  String(localStorage.getItem('mg_theme') || '').trim();
-const readLocalSynopsis = () =>
-  String(localStorage.getItem('mg_synopsis') || '').trim();
-
-const readLocalGenres = (): string[] => {
-  const v = readLocalJson<unknown>('mg_genres', []);
-  if (!Array.isArray(v)) return [];
-  return v.map((x) => String(x || '').trim()).filter(Boolean);
-};
-
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  Boolean(v) && typeof v === 'object';
-
-const readLocalCharacters = (): Array<{
-  name: string;
-  description: string;
-  gender: string;
-  isMain: boolean;
-  avatarPath?: string;
-}> => {
-  const v = readLocalJson<unknown>('mg_characters', []);
-  if (!Array.isArray(v)) return [];
-  return v
-    .map((x) => {
-      if (!isRecord(x)) return null;
-      const name = String(x.name || '').trim();
-      if (!name) return null;
-      return {
-        name,
-        description: String(x.description || '').trim(),
-        gender: String(x.gender || '其他').trim() || '其他',
-        isMain: Boolean(x.isMain),
-        avatarPath:
-          typeof x.avatarPath === 'string' && x.avatarPath.trim()
-            ? x.avatarPath.trim()
-            : undefined,
-      };
-    })
-    .filter(Boolean) as Array<{
-    name: string;
-    description: string;
-    gender: string;
-    isMain: boolean;
-    avatarPath?: string;
-  }>;
-};
 
 const createId = () => {
   try {
@@ -116,67 +59,7 @@ export function useGameState() {
     }
   });
 
-  /**
-   * 首页“角色阵容”的本地输入结构（轻量版），用于从模板回填到本地存储。
-   */
-  type CharacterInputLite = {
-    name: string;
-    description: string;
-    gender: string;
-    isMain: boolean;
-    avatarPath?: string;
-  };
 
-  /**
-   * 将模板 meta.genre 的字符串解析为可用于本地存储的标签数组。
-   */
-  const parseGenreList = (genre: string): string[] => {
-    const raw = String(genre || '').trim();
-    if (!raw) return [];
-
-    return Array.from(
-      new Set(
-        raw
-          .split(/\s*(?:\/|\||,|，|、|;|；)\s*/g)
-          .map((x) => x.trim())
-          .filter(Boolean),
-      ),
-    );
-  };
-
-  /**
-   * 根据模板角色的 key/name/role 估算“主角”优先级。
-   */
-  const scoreTemplateCharacter = (
-    key: string,
-    c: Story['characters'][string],
-  ) => {
-    const k = String(key || '').toLowerCase();
-    const name = String(c?.name || '').toLowerCase();
-    const role = String(c?.role || '').toLowerCase();
-
-    let score = 0;
-    if (/player|protagonist|main/.test(k)) score += 5;
-    if (name.includes('主角') || name === '我') score += 6;
-    if (role.includes('主角') || role.includes('protagonist')) score += 3;
-    if (typeof c?.age === 'number' && c.age > 0) score += 1;
-
-    return score;
-  };
-
-  /**
-   * 导入 JSON 进入游玩/设计时，将模板中的主题/简介/类型/角色回填到本地向导存储。
-   * @deprecated 应该直接使用 db.saveDraft
-   */
-  const persistHomeInputsFromTemplate = async (template: Story | MovieTemplate) => {
-    // We can still use this to populate the Draft in DB if we want "Import" to overwrite Draft.
-    // For now, let's keep the logic but maybe write to Draft DB?
-    // The user requirement: "正在编辑的数据也保存到 indexeddb 中(新的表), 只能有一条数据"
-    // So if we import to Design, we should overwrite Draft.
-    
-    // But this function was used for "Home Inputs" (localStorage).
-    // I'll leave it for now but we might need to change Home.vue to read from Draft DB.
-  };
 
   const loadGameData = async (
     data: Story | MovieTemplate,

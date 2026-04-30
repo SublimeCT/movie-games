@@ -3,11 +3,10 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ChevronRight, Home as HomeIcon, ArrowLeft, X } from 'lucide-vue-next';
 import { useGameState } from '../hooks/useGameState';
-import type { Character, Choice, Ending, MovieTemplate, StoryNode } from '../types/movie';
-import type { Story } from '../types/Story';
-import type { LDAGNode, LDAGNodeChoice } from '../types/LayeredDirectedAcyclicGraph';
-import { buildNodeMap } from '../utils/story';
+import type { Character, Choice, Ending } from '../types/movie';
 import type { ConditionalNextNodeId } from '../types/LayeredDirectedAcyclicGraph';
+import type { Story } from '../types/Story';
+import { buildNodeMap } from '../utils/story';
 import CharacterAvatar from './ui/CharacterAvatar.vue';
 import ThreeDCard from './ui/ThreeDCard.vue';
 import { db } from '../utils/db';
@@ -417,7 +416,7 @@ const currentAgents = computed(() => {
     currentNode.value?.characters &&
     currentNode.value.characters.length > 0
   ) {
-    currentNode.value.characters.forEach((name, idx) => {
+    currentNode.value.characters.forEach((name: string, idx: number) => {
       const n = (name || '').trim();
       if (!n) return;
       const char = Object.values(data?.characters || {}).find(
@@ -511,25 +510,9 @@ const selectDefaultCharacter = (characters: Record<string, Character>) => {
   return scored[0]?.c ?? null;
 };
 
-const protagonistName = computed(() => {
-  const data = gameData.value;
-  const selected = data?.characters
-    ? selectDefaultCharacter(data.characters)
-    : null;
-  return String(selected?.name || '').trim();
-});
 
-watch(
-  () => gameData.value,
-  (next) => {
-    const chars = next?.characters ?? {};
-    const protagonist = protagonistName.value;
-    const names = Object.values(chars)
-      .map((c) => String(c.name || '').trim())
-      .filter(Boolean);
-  },
-  { immediate: true },
-);
+
+
 
 const availableChoices = computed<Array<Choice & { triggerFlag?: string }>>(() => {
   if (!currentNode.value?.choices) return [];
@@ -653,7 +636,7 @@ const getEmotion = (agent: Character) => {
   if (text.match(/happy|smile|laugh|joy|delight/)) return 'happy';
   if (text.match(/surprise|shock|gasp|stun/)) return 'surprised';
 
-  const name = String(agent.name || '').trim();
+
   const emotions = ['neutral', 'happy', 'sad', 'angry', 'surprised'];
   const hash = (currentNodeId.value + agent.name)
     .split('')

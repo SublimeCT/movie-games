@@ -1,6 +1,6 @@
 import type { Story } from '../types/Story';
-import type { LDAGNode, LDAGNodeChoice, NodeId, EndingNodeId, ConditionalNextNodeId } from '../types/LayeredDirectedAcyclicGraph';
-import type { MovieTemplate, StoryNode, Choice, Ending } from '../types/movie';
+import type { LDAGNode, LDAGNodeChoice, ConditionalNextNodeId } from '../types/LayeredDirectedAcyclicGraph';
+import type { MovieTemplate, StoryNode, Ending } from '../types/movie';
 
 /**
  * 将 Story (LDAGActs) 扁平化为以 ID 为 Key 的节点映射表

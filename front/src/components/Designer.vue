@@ -67,14 +67,9 @@ const characters = ref<
   },
 ]);
 
-/** GLM 的默认请求地址（用于判定“是否被修改”） */
-const DEFAULT_GLM_BASE_URL =
-  'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-/** GLM 的默认模型（用于判定“是否被修改”） */
-const DEFAULT_GLM_MODEL = 'glm-4.6v-flash';
 
-const glmBaseUrl = useStorage('mg_glm_base_url', DEFAULT_GLM_BASE_URL);
-const glmModel = useStorage('mg_glm_model', DEFAULT_GLM_MODEL);
+
+
 
 /** 首页“剧情类型”可选项（与首页保持一致） */
 const availableGenres = [
@@ -1158,8 +1153,7 @@ const fitTree = async () => {
   vueFlowInstance?.fitView();
 };
 
-const clamp = (v: number, min: number, max: number) =>
-  Math.max(min, Math.min(max, v));
+
 
 const resetView = () => {
   vueFlowInstance?.fitView();
@@ -1437,39 +1431,7 @@ const nodeCharacterOptions = computed(() => {
   );
 });
 
-const protagonistName = computed(() => {
-  const fromInput = characters.value.find((c) => Boolean(c?.isMain));
-  const n = String(fromInput?.name || '').trim();
-  if (n) return n;
 
-  const templateChars = Object.values(draft.value?.characters ?? {});
-  if (templateChars.length === 0) return '';
-
-  const scored = templateChars
-    .map((c) => {
-      const key = String(c.id || '').toLowerCase();
-      const name = String(c.name || '').trim();
-      const role = String(c.role || '').toLowerCase();
-      let score = 0;
-      if (
-        key.includes('player') ||
-        key.includes('protagonist') ||
-        key.includes('main')
-      )
-        score += 5;
-      if (
-        role.includes('protagonist') ||
-        role.includes('player') ||
-        role.includes('main')
-      )
-        score += 6;
-      if (name === '我' || name.includes('主角')) score += 7;
-      return { score, name };
-    })
-    .sort((a, b) => b.score - a.score);
-
-  return scored[0]?.name || '';
-});
 
 const editingNodeCharacterNameSet = computed(() => {
   return new Set(resolveCharacterNames(editingNode.value?.characters));

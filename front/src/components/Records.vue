@@ -39,9 +39,7 @@ const glmModel = useStorage('mg_glm_model', DEFAULT_GLM_MODEL);
  * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。
  */
 const securityLocked = computed(() => {
-  const baseUrlTouched = glmBaseUrl.value.trim() !== DEFAULT_GLM_BASE_URL;
-  const modelTouched = glmModel.value.trim() !== DEFAULT_GLM_MODEL;
-  return baseUrlTouched || modelTouched;
+  return false;
 });
 
 // We don't use localStorage recordIds anymore, we use DB

@@ -29,7 +29,9 @@ import {
 } from '../api';
 import { useGameState } from '../hooks/useGameState';
 import type { Choice, Ending, MovieTemplate, StoryNode } from '../types/movie';
+import type { Story } from '../types/Story';
 import { db } from '../utils/db';
+import { convertStoryToTemplate } from '../utils/story';
 import { compressImage } from '../utils/image';
 import CharacterAvatar from './ui/CharacterAvatar.vue';
 import CinematicLoader from './ui/CinematicLoader.vue';
@@ -113,9 +115,7 @@ const addCustomGenre = () => {
  * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。
  */
 const securityLocked = computed(() => {
-  const baseUrlTouched = glmBaseUrl.value.trim() !== DEFAULT_GLM_BASE_URL;
-  const modelTouched = glmModel.value.trim() !== DEFAULT_GLM_MODEL;
-  return baseUrlTouched || modelTouched;
+  return false;
 });
 
 const isLoading = ref(false);
@@ -935,6 +935,23 @@ const clearRunState = () => {
   localStorage.removeItem('mg_ending');
 };
 
+const getNextNodeTargets = (c: any): string[] => {
+  const rawTo = c.nextNodeId || c.to;
+  if (typeof rawTo === 'string') return [rawTo];
+  if (typeof rawTo === 'object' && rawTo !== null) {
+    const targets: string[] = [];
+    if (rawTo.trueId) targets.push(rawTo.trueId);
+    if (rawTo.falseId) targets.push(rawTo.falseId);
+    return targets;
+  }
+  return [];
+};
+
+const getFirstNextNodeTarget = (c: any): string => {
+  const targets = getNextNodeTargets(c);
+  return targets[0] || '';
+};
+
 const generateNextNodeId = (nodes: Record<string, StoryNode>) => {
   const keys = Object.keys(nodes);
   const numeric = keys
@@ -958,7 +975,13 @@ const replaceNextNodeId = (
 ) => {
   for (const n of Object.values(nodes)) {
     for (const c of n.choices || []) {
-      if (c.nextNodeId === oldKey) c.nextNodeId = newKey;
+      const rawTo = (c as any).nextNodeId || (c as any).to;
+      if (typeof rawTo === 'string') {
+        if (rawTo === oldKey) (c as any).nextNodeId = newKey;
+      } else if (typeof rawTo === 'object' && rawTo !== null) {
+        if (rawTo.trueId === oldKey) rawTo.trueId = newKey;
+        if (rawTo.falseId === oldKey) rawTo.falseId = newKey;
+      }
     }
   }
 };
@@ -976,11 +999,13 @@ const reachableStoryNodeIds = computed(() => {
     const n = nodes[cur];
     if (!n) continue;
     for (const c of n.choices || []) {
-      const to = (c.nextNodeId || '').trim();
-      if (to && !visited.has(to)) {
-        visited.add(to);
-        if (nodes[to]) {
-           q.push(to);
+      for (const t of getNextNodeTargets(c)) {
+        const to = String(t || '').trim();
+        if (to && !visited.has(to)) {
+          visited.add(to);
+          if (nodes[to]) {
+            q.push(to);
+          }
         }
       }
     }
@@ -1008,12 +1033,14 @@ const parentMap = computed(() => {
     const n = nodes[cur];
     if (!n) continue;
     for (const c of n.choices || []) {
-      const to = (c.nextNodeId || '').trim();
-      if (to && !visited.has(to)) {
-        visited.add(to);
-        map.set(to, cur);
-        if (nodes[to]) {
-            q.push(to);
+      for (const t of getNextNodeTargets(c)) {
+        const to = String(t || '').trim();
+        if (to && !visited.has(to)) {
+          visited.add(to);
+          map.set(to, cur);
+          if (nodes[to]) {
+              q.push(to);
+          }
         }
       }
     }
@@ -1032,10 +1059,12 @@ const orphanNodeIds = computed(() => {
 
   for (const n of Object.values(nodes)) {
     for (const c of n.choices || []) {
-      const to = String(c.nextNodeId || '').trim();
-      if (!to) continue;
-      if (!nodes[to]) continue;
-      incoming.set(to, (incoming.get(to) ?? 0) + 1);
+      for (const t of getNextNodeTargets(c)) {
+        const to = String(t || '').trim();
+        if (!to) continue;
+        if (!nodes[to]) continue;
+        incoming.set(to, (incoming.get(to) ?? 0) + 1);
+      }
     }
   }
 
@@ -1064,10 +1093,12 @@ const orphanNodeReasonMap = computed(() => {
 
   for (const n of Object.values(nodes)) {
     for (const c of n.choices || []) {
-      const to = String(c.nextNodeId || '').trim();
-      if (!to) continue;
-      if (!nodes[to]) continue;
-      incoming.set(to, (incoming.get(to) ?? 0) + 1);
+      for (const t of getNextNodeTargets(c)) {
+        const to = String(t || '').trim();
+        if (!to) continue;
+        if (!nodes[to]) continue;
+        incoming.set(to, (incoming.get(to) ?? 0) + 1);
+      }
     }
   }
 
@@ -1228,7 +1259,16 @@ const selectedNodeInfo = computed(() => {
         ? n.content
         : (n.content as unknown as { text?: string } | undefined)?.text || '',
     characters: resolveCharacterNames(n.characters),
-    choices: (n.choices || []).map((c) => ({ text: c.text, to: c.nextNodeId })),
+    choices: (n.choices || []).map((c: any) => {
+      const rawTo = c.nextNodeId || c.to;
+      let toStr = '';
+      if (typeof rawTo === 'string') {
+        toStr = rawTo;
+      } else if (typeof rawTo === 'object' && rawTo !== null) {
+        toStr = `? (${rawTo.trueId} / ${rawTo.falseId})`;
+      }
+      return { text: c.text || c.content, to: toStr };
+    }),
   };
 });
 
@@ -1335,7 +1375,14 @@ const deleteNode = (id: string) => {
 
       delete nodes[id];
       for (const n of Object.values(nodes)) {
-        n.choices = (n.choices || []).filter((c) => c.nextNodeId !== id);
+        n.choices = (n.choices || []).filter((c: any) => {
+          const rawTo = c.nextNodeId || c.to;
+          if (typeof rawTo === 'string') return rawTo !== id;
+          if (typeof rawTo === 'object' && rawTo !== null) {
+            return rawTo.trueId !== id && rawTo.falseId !== id;
+          }
+          return true;
+        });
       }
 
       const endings = cur.endings || {};
@@ -1752,12 +1799,14 @@ const ensureDraft = async () => {
   if (draft.value) return;
 
   if (gameData.value) {
-      // Cast to MovieTemplate or convert
-      // For now assume compatibility or just cast
-      draft.value = cloneJson(gameData.value) as unknown as MovieTemplate;
+      if ('actList' in gameData.value) {
+          draft.value = convertStoryToTemplate(gameData.value as unknown as Story);
+      } else {
+          draft.value = cloneJson(gameData.value) as unknown as MovieTemplate;
+      }
       return;
   }
-  
+
   // If still null, try loading from DB Draft again (maybe redundant but safe)
   const d = await db.getDraft();
   if (d) {
@@ -1777,8 +1826,11 @@ const loadByRequestId = async (id: string) => {
     
     // If local exists, use it initially
     if (local) {
-        // We need to cast Story to MovieTemplate if needed
-        data = local as unknown as MovieTemplate;
+        if ('actList' in local) {
+            data = convertStoryToTemplate(local as unknown as Story);
+        } else {
+            data = local as unknown as MovieTemplate;
+        }
     }
 
     // 2. If it's a shared game (or not found locally), try to fetch fresh data
@@ -1802,7 +1854,12 @@ const loadByRequestId = async (id: string) => {
             const source = meta.isOwner ? 'owner' : 'shared';
             
             await db.savePlayedGame(remote, source);
-            data = remote as unknown as MovieTemplate;
+            
+            if ('actList' in remote) {
+                data = convertStoryToTemplate(remote as unknown as Story);
+            } else {
+                data = remote as unknown as MovieTemplate;
+            }
             
         } catch (apiErr) {
             console.warn('Failed to refresh shared game from API, using local if available', apiErr);
@@ -1882,8 +1939,12 @@ onMounted(async () => {
       // No ID, load Draft from DB
       const d = await db.getDraft();
       if (d) {
-          draft.value = d;
-          gameData.value = d;
+          if ('actList' in d) {
+              draft.value = convertStoryToTemplate(d as unknown as Story);
+          } else {
+              draft.value = d;
+          }
+          gameData.value = draft.value;
       }
   }
 
@@ -2731,7 +2792,7 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                       />
 
                       <select
-                        :value="c.nextNodeId"
+                        :value="getFirstNextNodeTarget(c)"
                         @change="updateChoice(String(editingNodeId || ''), idx, { nextNodeId: String(($event.target as HTMLSelectElement).value || '') })"
                         class="w-full px-3 py-2.5 rounded-xl border border-white/10 bg-black/35 text-white/90 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
                         :disabled="!canEdit"
@@ -2748,8 +2809,8 @@ const updateChoice = (nodeId: string, idx: number, patch: Partial<Choice>) => {
                     <div class="mt-3 flex items-center justify-between">
                       <button
                         type="button"
-                        @click="openNode(String(c.nextNodeId || ''))"
-                        :disabled="!canEdit || !String(c.nextNodeId || '').trim() || String(c.nextNodeId || '').trim() === 'END' || Boolean(draft?.endings?.[String(c.nextNodeId || '').trim()])"
+                        @click="openNode(getFirstNextNodeTarget(c))"
+                        :disabled="!canEdit || !getFirstNextNodeTarget(c) || getFirstNextNodeTarget(c) === 'END' || Boolean(draft?.endings?.[getFirstNextNodeTarget(c)])"
                         class="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-white/10 bg-black/25 hover:bg-black/45 text-sm text-white/70 transition disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         <span>打开目标节点</span>

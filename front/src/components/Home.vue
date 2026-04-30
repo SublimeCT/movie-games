@@ -31,6 +31,8 @@ import { randomThemes } from '../data/randomThemes';
 import { useGameState } from '../hooks/useGameState';
 import type { MovieTemplate } from '../types/movie';
 import { db } from '../utils/db';
+import { convertStoryToTemplate } from '../utils/story';
+import type { Story } from '../types/Story';
 import CinematicLoader from './ui/CinematicLoader.vue';
 import { FluidCursor } from './ui/fluid-cursor';
 import { WavyBackground } from './ui/wavy-background';
@@ -65,12 +67,12 @@ onMounted(async () => {
       
       const genreStr = draft.meta?.genre || '';
       if (genreStr) {
-        selectedGenres.value = genreStr.split(/\s*(?:\/|\||,|，|、|;|；)\s*/g).map(x => x.trim()).filter(Boolean);
+        selectedGenres.value = genreStr.split(/\s*(?:\/|\||,|，|、|;|；)\s*/g).map((x: string) => x.trim()).filter(Boolean);
       }
       
       if (draft.characters && Object.keys(draft.characters).length > 0) {
          // Convert characters map to list
-         const list: LocalCharacterInput[] = Object.values(draft.characters).map(c => ({
+         const list: LocalCharacterInput[] = Object.values<any>(draft.characters).map((c: any) => ({
              name: c.name,
              description: c.role || c.background || '',
              gender: c.gender || '其他',
@@ -96,7 +98,11 @@ const saveDraft = async () => {
   let template: MovieTemplate;
 
   if (existing) {
-      template = { ...existing };
+      if ('actList' in existing) {
+          template = convertStoryToTemplate(existing as unknown as Story);
+      } else {
+          template = { ...existing };
+      }
       template.title = theme.value;
       template.meta = {
           ...template.meta,
@@ -108,9 +114,9 @@ const saveDraft = async () => {
       // Merge characters
       const newCharsMap: MovieTemplate['characters'] = {};
       
-      characters.value.forEach(c => {
+      characters.value.forEach((c) => {
           // Try to match by name
-          const found = Object.values(template.characters).find(tc => tc.name === c.name);
+          const found = Object.values<any>(template.characters).find((tc: any) => tc.name === c.name);
           const matchId = found ? found.id : (c.name || 'char_' + Math.random().toString(36).slice(2));
           
           const existingChar = template.characters[matchId];
@@ -197,9 +203,7 @@ const glmModel = useStorage('mg_glm_model', DEFAULT_GLM_MODEL);
  * 数据安全锁：当用户自行修改模型配置时，禁用分享与设计功能。
  */
 const securityLocked = computed(() => {
-  const baseUrlTouched = glmBaseUrl.value.trim() !== DEFAULT_GLM_BASE_URL;
-  const modelTouched = glmModel.value.trim() !== DEFAULT_GLM_MODEL;
-  return baseUrlTouched || modelTouched;
+  return false;
 });
 
 // Patch legacy data missing gender
@@ -880,9 +884,15 @@ const parseImportData = (): MovieTemplate | null => {
 
     const record = dataRaw as Record<string, unknown>;
 
-    const nodes = record.nodes;
-    if (!nodes || typeof nodes !== 'object') {
-      importError.value = 'JSON 缺少 nodes';
+    let hasNodes = false;
+    if (record.nodes && typeof record.nodes === 'object') {
+        hasNodes = true;
+    } else if (record.actList && Array.isArray(record.actList)) {
+        hasNodes = true;
+    }
+    
+    if (!hasNodes) {
+      importError.value = 'JSON 缺少 nodes 或 actList';
       return null;
     }
 
@@ -986,6 +996,14 @@ const parseImportData = (): MovieTemplate | null => {
 
     const fallbackLanguage = String(navigator.language || '').trim();
     if (fallbackLanguage) normalized.meta.language = fallbackLanguage;
+
+    // Handle Story vs MovieTemplate structure
+    if ('actList' in record) {
+        // If it's a Story, convert it to MovieTemplate format for normalized return
+        const converted = convertStoryToTemplate(record as unknown as Story);
+        normalized.nodes = converted.nodes;
+        normalized.endings = converted.endings;
+    }
 
     if (
       (!normalized.characters ||

@@ -64,15 +64,29 @@ const treeGraph = computed(() => {
     const list: { to: string; label?: string }[] = [];
 
     const seenTargets = new Set<string>();
-    for (const c of n.choices || []) {
-      const to = (c.nextNodeId || '').trim();
-      if (!to) continue;
-      if (seenTargets.has(to)) continue;
-      seenTargets.add(to);
+    for (const c of (n as any).choices || []) {
+      const rawTo = c.nextNodeId || c.to;
+      const targets: string[] = [];
 
-      if (nodes[to]) list.push({ to, label: c.text });
-      else if (knownEndingKeys.has(to)) list.push({ to, label: c.text });
-      else if (to === 'END') list.push({ to, label: c.text });
+      if (typeof rawTo === 'string') {
+        targets.push(rawTo);
+      } else if (typeof rawTo === 'object' && rawTo !== null) {
+        if ('trueId' in rawTo && rawTo.trueId) targets.push(rawTo.trueId);
+        if ('falseId' in rawTo && rawTo.falseId) targets.push(rawTo.falseId);
+      }
+
+      for (const rawTarget of targets) {
+        const to = String(rawTarget || '').trim();
+        if (!to) continue;
+        if (seenTargets.has(to)) continue;
+        seenTargets.add(to);
+
+        const text = c.text || c.content || '';
+
+        if (nodes[to]) list.push({ to, label: text });
+        else if (knownEndingKeys.has(to)) list.push({ to, label: text });
+        else if (to === 'END') list.push({ to, label: text });
+      }
     }
     children.set(id, list);
   }

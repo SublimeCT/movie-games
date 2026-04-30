@@ -18,6 +18,8 @@ import PlotTree from './PlotTree.vue';
 import { getSharedRecordMeta, shareGame } from '../api';
 import { useGameState } from '../hooks/useGameState';
 import type { Character, Ending, StoryNode } from '../types/movie';
+import type { Story } from '../types/Story';
+import { buildNodeMap } from '../utils/story';
 
 // 使用 hook 获取游戏数据、结局数据和方法
 const router = useRouter();
@@ -28,6 +30,18 @@ const {
   handleRestartPlay,
   handleRemake,
 } = useGameState();
+
+const nodesMap = computed(() => {
+  const d = data.value;
+  if (!d) return {};
+  if ('nodes' in d && d.nodes) {
+    return d.nodes;
+  }
+  if ('actList' in d && d.actList) {
+    return buildNodeMap(d as Story);
+  }
+  return {};
+});
 
 const selectDefaultCharacter = (characters: Record<string, Character>) => {
   const entries = Object.entries(characters);
@@ -266,7 +280,7 @@ const endingTitle = computed(() => {
 });
 
 const stats = computed(() => {
-  const nodes = data.value?.nodes ?? {};
+  const nodes = nodesMap.value;
   const endings = data.value?.endings ?? {};
   return {
     nodes: Object.keys(nodes).length,
@@ -415,7 +429,7 @@ onUnmounted(() => {
  * 当 start 节点存在但没有任何选项时，将节点 1 视为起始节点。
  */
 const fallbackStartToOne = computed(() => {
-  const nodes = data.value?.nodes;
+  const nodes = nodesMap.value;
   if (!nodes?.start) return false;
   if (!nodes['1']) return false;
   const choices = (nodes.start as StoryNode).choices;
@@ -423,7 +437,7 @@ const fallbackStartToOne = computed(() => {
 });
 
 const startNodeId = computed(() => {
-  const nodes = data.value?.nodes;
+  const nodes = nodesMap.value;
   if (!nodes) return '';
   const keys = Object.keys(nodes);
   if (keys.length === 0) return '';
@@ -454,7 +468,7 @@ const endingFocusId = computed(() => {
 // Re-implementing simplified parent map computation for highlighting:
 
 const parentMap = computed(() => {
-  const nodes = data.value?.nodes ?? {};
+  const nodes = nodesMap.value as any;
   const root = startNodeId.value;
   const map = new Map<string, string>();
   if (!root || !nodes[root]) return map;
@@ -467,11 +481,23 @@ const parentMap = computed(() => {
     const n = nodes[cur];
     if (!n) continue;
     for (const c of n.choices || []) {
-      const to = c.nextNodeId;
-      if (to && !visited.has(to)) {
-        visited.add(to);
-        map.set(to, cur);
-        q.push(to);
+      const rawTo = c.nextNodeId || (c as any).to;
+      const targets: string[] = [];
+
+      if (typeof rawTo === 'string') {
+        targets.push(rawTo);
+      } else if (typeof rawTo === 'object' && rawTo !== null) {
+        if ('trueId' in rawTo && rawTo.trueId) targets.push(rawTo.trueId);
+        if ('falseId' in rawTo && rawTo.falseId) targets.push(rawTo.falseId);
+      }
+
+      for (const rawTarget of targets) {
+        const to = String(rawTarget || '').trim();
+        if (to && !visited.has(to)) {
+          visited.add(to);
+          map.set(to, cur);
+          q.push(to);
+        }
       }
     }
   }
@@ -524,15 +550,15 @@ watch(
 const selectedNodeInfo = computed(() => {
   const id = selectedId.value;
   if (!id) return null;
-  const nodes = data.value?.nodes ?? {};
+  const nodes = nodesMap.value as any;
   const endings = data.value?.endings ?? {};
   if (endings[id]) {
     return {
       id,
       kind: 'ending' as const,
       title: id,
-      description: endings[id].description,
-      type: endings[id].type,
+      description: (endings[id] as any).description || (endings[id] as any).content,
+      type: (endings[id] as any).type || 'neutral',
     };
   }
   const n = nodes[id];
@@ -546,7 +572,16 @@ const selectedNodeInfo = computed(() => {
         : // biome-ignore lint/suspicious/noExplicitAny: Handle legacy object format
           (n.content as any)?.text || '',
     characters: n.characters || [],
-    choices: (n.choices || []).map((c) => ({ text: c.text, to: c.nextNodeId })),
+    choices: (n.choices || []).map((c: any) => {
+      const rawTo = c.nextNodeId || c.to;
+      let toStr = '';
+      if (typeof rawTo === 'string') {
+        toStr = rawTo;
+      } else if (typeof rawTo === 'object' && rawTo !== null) {
+        toStr = `? (${rawTo.trueId} / ${rawTo.falseId})`;
+      }
+      return { text: c.text || c.content, to: toStr };
+    }),
   };
 });
 
@@ -656,7 +691,6 @@ const copyJson = async () => {
               <button
                 v-if="playEntry === 'import' || (isOwner && playEntry === 'owner') || (!isOwner && playEntry === 'shared')"
                 @click="goDesign"
-                :disabled="(playEntry === 'owner' && securityLocked)"
                 class="group relative inline-flex items-center justify-center px-4 py-3 rounded-xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-[0_0_25px_rgba(168,85,247,0.14)] transition-all gap-2 overflow-hidden w-full md:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <div class="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
@@ -668,7 +702,7 @@ const copyJson = async () => {
               <button
                 v-if="isOwner && playEntry === 'owner'"
                 @click="handleShare"
-                :disabled="shareLoading || securityLocked"
+                :disabled="shareLoading"
                 class="group relative inline-flex items-center justify-center px-4 py-3 rounded-xl font-bold text-white/90 border border-white/10 bg-black/35 hover:bg-black/55 backdrop-blur-md shadow-[0_0_25px_rgba(34,211,238,0.14)] transition-all gap-2 overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed w-full md:w-auto"
               >
                 <div class="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
@@ -732,8 +766,8 @@ const copyJson = async () => {
               >
                 <PlotTree
                   ref="plotTreeRef"
-                  :nodes="data?.nodes || {}"
-                  :endings="data?.endings || {}"
+                  :nodes="(nodesMap as any) || {}"
+                  :endings="(data?.endings as any) || {}"
                   :startNodeId="startNodeId"
                   :highlightedIds="highlighted"
                   :prevent-scrolling="true"

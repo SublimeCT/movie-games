@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import { ChevronRight, Home as HomeIcon, ArrowLeft, X } from 'lucide-vue-next';
 import { useGameState } from '../hooks/useGameState';
 import type { Character, Choice, Ending, MovieTemplate, StoryNode } from '../types/movie';
 import type { Story } from '../types/Story';
@@ -537,7 +538,7 @@ const availableChoices = computed<Array<Choice & { triggerFlag?: string }>>(() =
   
   return currentNode.value.choices.map((c: any) => {
     let nextId = '';
-    const rawNextId = c.nextNodeId;
+    const rawNextId = c.nextNodeId || c.to;
     
     if (typeof rawNextId === 'string') {
       nextId = rawNextId;

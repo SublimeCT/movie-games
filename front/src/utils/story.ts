@@ -1,5 +1,6 @@
 import type { Story } from '../types/Story';
 import type { LDAGNode, LDAGNodeChoice, NodeId, EndingNodeId, ConditionalNextNodeId } from '../types/LayeredDirectedAcyclicGraph';
+import type { MovieTemplate, StoryNode, Choice, Ending } from '../types/movie';
 
 /**
  * 将 Story (LDAGActs) 扁平化为以 ID 为 Key 的节点映射表
@@ -45,4 +46,73 @@ export const getNextNodeId = (
   
   // Should not happen if types are correct
   return '';
+};
+
+/**
+ * 将 Story 转换为 MovieTemplate，以便在 Designer 等仅支持 MovieTemplate 的组件中使用
+ * @param story - 完整的剧情 Story 对象
+ * @returns MovieTemplate 对象
+ */
+export const convertStoryToTemplate = (story: Story): MovieTemplate => {
+  const nodes: Record<string, StoryNode> = {};
+  const endings: Record<string, Ending> = {};
+  
+  // 转换节点
+  const ldagMap = buildNodeMap(story);
+  for (const [id, ldagNode] of Object.entries(ldagMap)) {
+    nodes[id] = {
+      id: ldagNode.id,
+      content: ldagNode.content,
+      characters: ldagNode.characters,
+      choices: (ldagNode.choices || []).map((c: LDAGNodeChoice) => {
+        let nextNodeId = '';
+        if (typeof c.nextNodeId === 'string') {
+          nextNodeId = c.nextNodeId;
+        } else if (c.nextNodeId && typeof c.nextNodeId === 'object' && 'checkFlag' in c.nextNodeId) {
+          // Designer 暂不支持条件跳转，取 trueId 作为回退
+          nextNodeId = c.nextNodeId.trueId;
+        }
+        
+        return {
+          text: c.content,
+          nextNodeId,
+          triggerFlag: c.triggerFlag
+        };
+      })
+    };
+  }
+
+  // 转换结局
+  if (story.endings) {
+    for (const [key, ending] of Object.entries(story.endings)) {
+      endings[key] = {
+        type: 'neutral', // 默认类型，如果能推断可以修改
+        description: ending.content,
+        endingKey: key,
+      };
+    }
+  }
+
+  return {
+    projectId: (story as any).projectId || crypto.randomUUID(),
+    requestId: story.requestId,
+    title: story.title || '',
+    version: (story as any).version || '1.0.0',
+    owner: (story as any).owner || 'User',
+    meta: {
+      logline: story.meta?.logline || story.title || '',
+      synopsis: story.meta?.synopsis || '',
+      targetRuntimeMinutes: story.meta?.targetRuntimeMinutes || 30,
+      genre: story.meta?.genre || '',
+      language: story.meta?.language || navigator.language
+    },
+    backgroundImageBase64: (story as any).backgroundImageBase64,
+    nodes,
+    endings,
+    characters: story.characters || {},
+    provenance: (story as any).provenance || {
+      createdBy: 'import_story',
+      createdAt: new Date().toISOString()
+    }
+  };
 };

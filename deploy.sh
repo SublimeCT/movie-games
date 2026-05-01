@@ -1,5 +1,6 @@
 echo 'Building backend...';
-pnpm run build:backend
+# pnpm run build:backend
+cargo build --release
 echo 'stop service and copying backend...';
 sudo systemctl stop movie-games;
 sudo cp ./server/target/release/server /srv/movie-games-server/server

@@ -14,8 +14,8 @@ import {
   Sparkles,
   Wand2,
   X,
-  Settings,
-  Check,
+  // Settings,
+  // Check,
 } from 'lucide-vue-next';
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';

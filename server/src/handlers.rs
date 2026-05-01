@@ -152,6 +152,33 @@ fn sanitize_text(filter: &SensitiveFilter, text: &str) -> String {
     filter.sanitize_str(text).0
 }
 
+fn truncate_middle(text: &str, max_chars: usize) -> String {
+    let len = text.chars().count();
+    if len <= max_chars {
+        return text.to_string();
+    }
+    let head = max_chars / 2;
+    let tail = max_chars.saturating_sub(head);
+    let prefix: String = text.chars().take(head).collect();
+    let suffix: String = text
+        .chars()
+        .rev()
+        .take(tail)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{}…<truncated {} chars>…{}", prefix, len - max_chars, suffix)
+}
+
+#[derive(serde::Serialize)]
+struct ActFillError {
+    act: usize,
+    error: String,
+    raw_response_preview: String,
+    cleaned_response_preview: String,
+}
+
 #[allow(clippy::result_large_err)]
 fn sanitize_json_value(
     filter: &SensitiveFilter,
@@ -867,12 +894,20 @@ pub(crate) async fn generate(
             }
         };
         
-        let mut blueprint: BluePrint = match serde_json::from_str(&clean_json(&blueprint_resp)) {
+        let blueprint_clean = clean_json(&blueprint_resp);
+        let mut blueprint: BluePrint = match serde_json::from_str(&blueprint_clean) {
             Ok(v) => v,
-            Err(e) => {
-                finish_llm_request_log(&db, request_id, "failed", Some(&blueprint_resp), Some(&format!("BluePrint Parse Error: {}", e)), None).await;
-                return Err(error_response(CODE_INTERNAL_ERROR, format!("BluePrint Parse Error: {}", e)).into_response());
-            }
+            Err(json_err) => match json5::from_str(&blueprint_clean) {
+                Ok(v) => v,
+                Err(json5_err) => {
+                    let err_msg = format!(
+                        "BluePrint Parse Error: serde_json={}, json5={}",
+                        json_err, json5_err
+                    );
+                    finish_llm_request_log(&db, request_id, "failed", Some(&blueprint_resp), Some(&err_msg), None).await;
+                    return Err(error_response(CODE_INTERNAL_ERROR, err_msg).into_response());
+                }
+            },
         };
         
         println!("BluePrint generated. Levels: {}, Acts: {}", blueprint.level_count, blueprint.act_count);
@@ -919,9 +954,12 @@ pub(crate) async fn generate(
             let api_key = payload_clone.api_key
                 .clone()
                 .filter(|s| !s.is_empty());
+
+            let sensitive = _sensitive.clone();
             
             filled_acts_futures.push(tokio::spawn(async move {
                 let prompt = construct_fill_node_content_prompt(&payload_ref, &act_info, &nodes_structure);
+                let act = idx + 1;
                 
                 let resp = crate::llm::call_llm_with_api_key(
                     prompt,
@@ -929,17 +967,65 @@ pub(crate) async fn generate(
                     api_key,
                     base_url,
                     model,
-                ).await?;
+                )
+                .await
+                .map_err(|e| ActFillError {
+                    act,
+                    error: format!("LLM Call Failed: {}", e),
+                    raw_response_preview: String::new(),
+                    cleaned_response_preview: String::new(),
+                })?;
                 
                 #[derive(serde::Deserialize)]
                 struct WrappedLDAGNodes {
-                    nodes: Vec<Vec<LDAGNode>>
+                    nodes: Vec<Vec<LDAGNode>>,
                 }
 
-                let wrapped: WrappedLDAGNodes = serde_json::from_str(&clean_json(&resp))
-                    .map_err(|e| format!("JSON Parse Error for Act {}: {}", idx + 1, e))?;
-                
-                Ok::<Vec<Vec<LDAGNode>>, String>(wrapped.nodes)
+                let raw_s = sanitize_text(sensitive.as_ref(), &resp);
+                let act_clean = clean_json(&resp);
+                let clean_s = sanitize_text(sensitive.as_ref(), &act_clean);
+
+                let parsed_nodes = match serde_json::from_str::<WrappedLDAGNodes>(&act_clean) {
+                    Ok(v) => Ok(v.nodes),
+                    Err(wrapped_json_err) => match json5::from_str::<WrappedLDAGNodes>(&act_clean) {
+                        Ok(v) => Ok(v.nodes),
+                        Err(wrapped_json5_err) => {
+                            let value_json = serde_json::from_str::<serde_json::Value>(&act_clean)
+                                .map_err(|e| e.to_string());
+                            let value_json5 = json5::from_str::<serde_json::Value>(&act_clean)
+                                .map_err(|e| e.to_string());
+
+                            let maybe_value = value_json.or(value_json5);
+                            match maybe_value {
+                                Ok(v) => {
+                                    if v.is_array() {
+                                        serde_json::from_value::<Vec<Vec<LDAGNode>>>(v)
+                                            .map_err(|e| e.to_string())
+                                    } else if let Some(nodes_v) = v.get("nodes") {
+                                        serde_json::from_value::<Vec<Vec<LDAGNode>>>(nodes_v.clone())
+                                            .map_err(|e| e.to_string())
+                                    } else {
+                                        Err("Missing field 'nodes'".to_string())
+                                    }
+                                }
+                                Err(value_err) => Err(format!(
+                                    "JSON Parse Error for Act {}: serde_json={}, json5={}, value_parse={}",
+                                    act, wrapped_json_err, wrapped_json5_err, value_err
+                                )),
+                            }
+                        }
+                    },
+                };
+
+                match parsed_nodes {
+                    Ok(nodes) => Ok::<Vec<Vec<LDAGNode>>, ActFillError>(nodes),
+                    Err(err) => Err(ActFillError {
+                        act,
+                        error: err,
+                        raw_response_preview: truncate_middle(&raw_s, 6000),
+                        cleaned_response_preview: truncate_middle(&clean_s, 6000),
+                    }),
+                }
             }));
         }
         
@@ -957,11 +1043,27 @@ pub(crate) async fn generate(
                     filled_act_list.push(nodes)
                 },
                 Ok(Err(e)) => {
-                    let msg = format!("Act {} failed with logic error: {}", i + 1, e);
+                    let msg = format!("Act {} failed with logic error: {}", e.act, e.error);
                     println!("{}", msg);
                     crate::llm::log_to_file(&msg);
-                    finish_llm_request_log(&db, request_id, "failed", None, Some(&e), None).await;
-                    return Err(error_response(CODE_INTERNAL_ERROR, format!("Content Fill Failed: {}", e)).into_response());
+                    crate::llm::log_to_file(&format!(
+                        "REQUEST {} Act {} raw_response_preview:\n{}",
+                        request_id, e.act, e.raw_response_preview
+                    ));
+                    crate::llm::log_to_file(&format!(
+                        "REQUEST {} Act {} cleaned_response_preview:\n{}",
+                        request_id, e.act, e.cleaned_response_preview
+                    ));
+
+                    let response_log = serde_json::to_string(&e).unwrap_or_default();
+                    finish_llm_request_log(&db, request_id, "failed", Some(&response_log), Some(&e.error), None).await;
+
+                    return Err(error_response_with_data(
+                        CODE_INTERNAL_ERROR,
+                        format!("Content Fill Failed: Act {}", e.act),
+                        e,
+                    )
+                    .into_response());
                 }
                 Err(e) => {
                     let msg = format!("Act {} failed with task join error: {}", i + 1, e);

@@ -15,7 +15,7 @@ pub(crate) fn clean_json(s: &str) -> String {
 
     let mut output = String::with_capacity(raw.len());
     let mut in_string = false;
-    let mut chars = raw.chars();
+    let mut chars = raw.chars().peekable();
 
     while let Some(c) = chars.next() {
         if in_string {
@@ -27,8 +27,26 @@ pub(crate) fn clean_json(s: &str) -> String {
                     }
                 }
                 '"' => {
-                    output.push('"');
-                    in_string = false;
+                    let mut la = chars.clone();
+                    while let Some(p) = la.peek().copied() {
+                        if matches!(p, ' ' | '\n' | '\r' | '\t') {
+                            la.next();
+                            continue;
+                        }
+                        break;
+                    }
+
+                    let terminator = match la.peek().copied() {
+                        None => true,
+                        Some(next_non_ws) => matches!(next_non_ws, ',' | '}' | ']' | ':'),
+                    };
+
+                    if terminator {
+                        output.push('"');
+                        in_string = false;
+                    } else {
+                        output.push_str("\\\"");
+                    }
                 }
                 '\n' => output.push_str("\\n"),
                 '\r' => output.push_str("\\r"),
@@ -46,6 +64,19 @@ pub(crate) fn clean_json(s: &str) -> String {
         }
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean_json;
+
+    #[test]
+    fn clean_json_escapes_unescaped_quotes_inside_strings() {
+        let raw = r#"{"nodes":[[{"id":"L1N1","content":"他说:"你好"。","characters":["A"],"choices":[{"content":"继续","nextNodeId":"L1N2"}]}]]}"#;
+        let cleaned = clean_json(raw);
+        let v: serde_json::Value = serde_json::from_str(&cleaned).unwrap();
+        assert_eq!(v["nodes"][0][0]["content"].as_str().unwrap(), r#"他说:"你好"。"#);
+    }
 }
 
 // Old prompt function, kept for reference or legacy
@@ -484,6 +515,7 @@ interface Output {{
 2.  **Structure Integrity**: Node IDs and connection relationships (choices' nextNodeId) MUST be EXACTLY the same as the input **LDAG Structure**. You CANNOT add, delete, or modify the structure (nodes/edges), ONLY fill in the `content` and `characters`.
 3.  **No Markdown**: **DO NOT output Markdown code blocks (like ```json ... ```). Output the RAW JSON string only.**
 4.  **Strict JSON**: The output must be valid JSON.
+5.  **对话引号**: 在 `content` 或 `choices[].content` 中写对话时，禁止使用 ASCII 双引号 `"` 作为中文对话引号；必须使用中文引号（例如 `“` 和 `”`）或确保内部双引号被转义为 `\\\"`，避免破坏 JSON。
 "#,
         title = title,
         summary = summary,

@@ -1,9 +1,112 @@
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 use crate::sensitive::SensitiveFilter;
+
+struct LlmRequestsSchema {
+    prompt_column: String,
+    response_column: String,
+}
+
+static LLM_REQUESTS_SCHEMA: OnceLock<LlmRequestsSchema> = OnceLock::new();
+
+async fn detect_llm_requests_schema(db: &PgPool) -> LlmRequestsSchema {
+    let has_llm_prompt: bool = sqlx::query_scalar(
+        "select exists( \
+            select 1 \
+            from information_schema.columns \
+            where table_schema = 'public' \
+              and table_name = 'llm_requests' \
+              and column_name = $1 \
+        )",
+    )
+    .bind("llm_prompt")
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
+    let has_glm_prompt: bool = sqlx::query_scalar(
+        "select exists( \
+            select 1 \
+            from information_schema.columns \
+            where table_schema = 'public' \
+              and table_name = 'llm_requests' \
+              and column_name = $1 \
+        )",
+    )
+    .bind("glm_prompt")
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
+    let has_llm_response: bool = sqlx::query_scalar(
+        "select exists( \
+            select 1 \
+            from information_schema.columns \
+            where table_schema = 'public' \
+              and table_name = 'llm_requests' \
+              and column_name = $1 \
+        )",
+    )
+    .bind("llm_response")
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
+    let has_glm_response: bool = sqlx::query_scalar(
+        "select exists( \
+            select 1 \
+            from information_schema.columns \
+            where table_schema = 'public' \
+              and table_name = 'llm_requests' \
+              and column_name = $1 \
+        )",
+    )
+    .bind("glm_response")
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
+    let prompt_column = if has_llm_prompt {
+        "llm_prompt"
+    } else if has_glm_prompt {
+        "glm_prompt"
+    } else {
+        "llm_prompt"
+    };
+
+    let response_column = if has_llm_response {
+        "llm_response"
+    } else if has_glm_response {
+        "glm_response"
+    } else {
+        "llm_response"
+    };
+
+    LlmRequestsSchema {
+        prompt_column: prompt_column.to_string(),
+        response_column: response_column.to_string(),
+    }
+}
+
+async fn get_llm_requests_schema(db: &PgPool) -> LlmRequestsSchema {
+    if let Some(v) = LLM_REQUESTS_SCHEMA.get() {
+        return LlmRequestsSchema {
+            prompt_column: v.prompt_column.clone(),
+            response_column: v.response_column.clone(),
+        };
+    }
+
+    let schema = detect_llm_requests_schema(db).await;
+    let _ = LLM_REQUESTS_SCHEMA.set(LlmRequestsSchema {
+        prompt_column: schema.prompt_column.clone(),
+        response_column: schema.response_column.clone(),
+    });
+    schema
+}
 
 #[derive(Clone)]
 pub(crate) struct AppState {
@@ -82,6 +185,7 @@ pub(crate) async fn begin_llm_request_log(
     using_override_key: bool,
 ) -> Result<Uuid, DbError> {
     let mut tx = db.begin().await.map_err(|_| DbError::InternalError)?;
+    let schema = get_llm_requests_schema(db).await;
 
     let _ = sqlx::query("select pg_advisory_xact_lock($1)")
         .bind(9001i64)
@@ -133,9 +237,11 @@ pub(crate) async fn begin_llm_request_log(
     }
 
     let id = Uuid::new_v4();
-    sqlx::query(
-        "insert into llm_requests (id, client_ip, user_agent, route, status, request_payload, llm_prompt) values ($1, $2, $3, $4, 'running', $5, $6)",
-    )
+    let insert_sql = format!(
+        "insert into llm_requests (id, client_ip, user_agent, route, status, request_payload, {}) values ($1, $2, $3, $4, 'running', $5, $6)",
+        schema.prompt_column
+    );
+    sqlx::query(&insert_sql)
     .bind(id)
     .bind(client_ip)
     .bind(user_agent)
@@ -159,9 +265,12 @@ pub(crate) async fn finish_llm_request_log(
     error_message: Option<&str>,
     response_time_ms: Option<i64>,
 ) {
-    let result = sqlx::query(
-        "update llm_requests set status = $1, llm_response = $2, error_text = $3, response_time_ms = $4, updated_at = now() where id = $5",
-    )
+    let schema = get_llm_requests_schema(db).await;
+    let update_sql = format!(
+        "update llm_requests set status = $1, {} = $2, error_text = $3, response_time_ms = $4, updated_at = now() where id = $5",
+        schema.response_column
+    );
+    let result = sqlx::query(&update_sql)
     .bind(status)
     .bind(response_content)
     .bind(error_message)
@@ -412,9 +521,12 @@ pub(crate) async fn create_imported_request(
     processed_response: serde_json::Value,
 ) -> Result<Uuid, DbError> {
     let id = Uuid::new_v4();
-    sqlx::query(
-        "insert into llm_requests (id, client_ip, user_agent, route, status, request_payload, llm_prompt, processed_response, template_source) values ($1, $2, $3, '/import', 'success', $4, '[import]', $5, 'import')",
-    )
+    let schema = get_llm_requests_schema(db).await;
+    let insert_sql = format!(
+        "insert into llm_requests (id, client_ip, user_agent, route, status, request_payload, {}, processed_response, template_source) values ($1, $2, $3, '/import', 'success', $4, '[import]', $5, 'import')",
+        schema.prompt_column
+    );
+    sqlx::query(&insert_sql)
     .bind(id)
     .bind(client_ip)
     .bind(user_agent)

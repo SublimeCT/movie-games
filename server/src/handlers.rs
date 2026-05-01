@@ -31,6 +31,7 @@ use crate::prompt::{
     clean_json, construct_blueprint_prompt, construct_expand_character_prompt,
     construct_expand_worldview_prompt, construct_fill_node_content_prompt,
     construct_prompt,
+    repair_ldag_nodes_json,
 };
 use crate::sensitive::SensitiveFilter;
 use crate::template::{
@@ -982,7 +983,8 @@ pub(crate) async fn generate(
                 }
 
                 let raw_s = sanitize_text(sensitive.as_ref(), &resp);
-                let act_clean = clean_json(&resp);
+                let act_clean_raw = clean_json(&resp);
+                let act_clean = repair_ldag_nodes_json(&act_clean_raw);
                 let clean_s = sanitize_text(sensitive.as_ref(), &act_clean);
 
                 let parsed_nodes = match serde_json::from_str::<WrappedLDAGNodes>(&act_clean) {

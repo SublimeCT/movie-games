@@ -66,9 +66,232 @@ pub(crate) fn clean_json(s: &str) -> String {
     output
 }
 
+pub(crate) fn repair_ldag_nodes_json(s: &str) -> String {
+    fn parse_any_json_value(input: &str) -> Option<serde_json::Value> {
+        serde_json::from_str::<serde_json::Value>(input)
+            .or_else(|_| json5::from_str::<serde_json::Value>(input))
+            .ok()
+    }
+
+    fn match_brackets(bytes: &[u8], start: usize, open: u8, close: u8) -> Option<usize> {
+        if *bytes.get(start)? != open {
+            return None;
+        }
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut escape = false;
+        for i in start..bytes.len() {
+            let b = bytes[i];
+            if in_string {
+                if escape {
+                    escape = false;
+                    continue;
+                }
+                if b == b'\\' {
+                    escape = true;
+                    continue;
+                }
+                if b == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            if b == b'"' {
+                in_string = true;
+                continue;
+            }
+            if b == open {
+                depth += 1;
+                continue;
+            }
+            if b == close {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    fn parse_string_token(bytes: &[u8], start_quote: usize) -> Option<(usize, Vec<u8>, bool)> {
+        if *bytes.get(start_quote)? != b'"' {
+            return None;
+        }
+        let mut out = Vec::new();
+        let mut i = start_quote + 1;
+        let mut escape = false;
+        let mut had_escape = false;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if escape {
+                had_escape = true;
+                out.push(b);
+                escape = false;
+                i += 1;
+                continue;
+            }
+            if b == b'\\' {
+                escape = true;
+                i += 1;
+                continue;
+            }
+            if b == b'"' {
+                return Some((i, out, had_escape));
+            }
+            out.push(b);
+            i += 1;
+        }
+        None
+    }
+
+    fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        i
+    }
+
+    fn find_top_level_nodes_array_start(bytes: &[u8]) -> Option<usize> {
+        let mut i = 0usize;
+        let mut in_string = false;
+        let mut escape = false;
+        let mut brace_depth = 0i32;
+        let mut bracket_depth = 0i32;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if in_string {
+                if escape {
+                    escape = false;
+                    i += 1;
+                    continue;
+                }
+                if b == b'\\' {
+                    escape = true;
+                    i += 1;
+                    continue;
+                }
+                if b == b'"' {
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+
+            match b {
+                b'"' => {
+                    if brace_depth == 1 && bracket_depth == 0 {
+                        if let Some((end_quote, token, had_escape)) = parse_string_token(bytes, i) {
+                            if !had_escape && token == b"nodes" {
+                                let mut j = skip_ws(bytes, end_quote + 1);
+                                if bytes.get(j) == Some(&b':') {
+                                    j = skip_ws(bytes, j + 1);
+                                    if bytes.get(j) == Some(&b'[') {
+                                        return Some(j);
+                                    }
+                                }
+                            }
+                            i = end_quote + 1;
+                            continue;
+                        }
+                    }
+                    in_string = true;
+                    i += 1;
+                }
+                b'{' => {
+                    brace_depth += 1;
+                    i += 1;
+                }
+                b'}' => {
+                    brace_depth -= 1;
+                    i += 1;
+                }
+                b'[' => {
+                    bracket_depth += 1;
+                    i += 1;
+                }
+                b']' => {
+                    bracket_depth -= 1;
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+        None
+    }
+
+    if parse_any_json_value(s).is_some() {
+        return s.to_string();
+    }
+
+    let trimmed = s.trim();
+    if !trimmed.starts_with('{') {
+        return s.to_string();
+    }
+
+    let bytes = trimmed.as_bytes();
+    let nodes_start = match find_top_level_nodes_array_start(bytes) {
+        Some(v) => v,
+        None => return s.to_string(),
+    };
+    let nodes_end = match match_brackets(bytes, nodes_start, b'[', b']') {
+        Some(v) => v,
+        None => return s.to_string(),
+    };
+
+    let nodes_array_str = &trimmed[nodes_start..=nodes_end];
+    let nodes_value = match parse_any_json_value(nodes_array_str) {
+        Some(v) if v.is_array() => v,
+        _ => return s.to_string(),
+    };
+
+    let mut extra_arrays: Vec<serde_json::Value> = Vec::new();
+    let mut i = nodes_end + 1;
+    i = skip_ws(bytes, i);
+    while i < bytes.len() {
+        if bytes[i] == b'}' {
+            break;
+        }
+        while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b',') {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] == b'}' {
+            break;
+        }
+        if bytes[i] != b'[' {
+            break;
+        }
+        let end = match match_brackets(bytes, i, b'[', b']') {
+            Some(v) => v,
+            None => break,
+        };
+        let arr_str = &trimmed[i..=end];
+        let arr_value = match parse_any_json_value(arr_str) {
+            Some(v) if v.is_array() => v,
+            _ => break,
+        };
+        extra_arrays.push(arr_value);
+        i = end + 1;
+        i = skip_ws(bytes, i);
+    }
+
+    if extra_arrays.is_empty() {
+        return s.to_string();
+    }
+
+    let mut combined_layers: Vec<serde_json::Value> = nodes_value
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    combined_layers.extend(extra_arrays);
+
+    serde_json::json!({ "nodes": combined_layers }).to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::clean_json;
+    use super::{clean_json, repair_ldag_nodes_json};
 
     #[test]
     fn clean_json_escapes_unescaped_quotes_inside_strings() {
@@ -76,6 +299,31 @@ mod tests {
         let cleaned = clean_json(raw);
         let v: serde_json::Value = serde_json::from_str(&cleaned).unwrap();
         assert_eq!(v["nodes"][0][0]["content"].as_str().unwrap(), r#"他说:"你好"。"#);
+    }
+
+    #[test]
+    fn repair_ldag_nodes_json_merges_unkeyed_arrays_into_nodes() {
+        let raw = r#"{
+  "nodes": [
+    [
+      { "id": "L1N1", "content": "a", "characters": ["A"], "choices": [] }
+    ]
+  ],
+  [
+    { "id": "L2N1", "content": "b", "characters": ["A"], "choices": [] }
+  ],
+  [
+    { "id": "L3N1", "content": "c", "characters": ["A"], "choices": [] }
+  ]
+}"#;
+        let repaired = repair_ldag_nodes_json(raw);
+        let v: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert!(v.is_object());
+        assert!(v["nodes"].is_array());
+        assert_eq!(v["nodes"].as_array().unwrap().len(), 3);
+        assert_eq!(v["nodes"][0][0]["id"].as_str().unwrap(), "L1N1");
+        assert_eq!(v["nodes"][1][0]["id"].as_str().unwrap(), "L2N1");
+        assert_eq!(v["nodes"][2][0]["id"].as_str().unwrap(), "L3N1");
     }
 }
 
@@ -509,6 +757,7 @@ interface Output {{
 ```
 
 **You MUST output a single JSON object conforming to the `Output` interface (i.e., `{{ "nodes": [...] }}`).**
+The `nodes` array must contain ALL layers for this act (e.g., `[[...],[...],[...]]`). Do NOT output any additional top-level arrays or fields outside `"nodes"`.
 
 ## Constraints
 1.  **Consistency**: Maintain plot continuity and logic. It MUST align with the **Current Act Information**.
